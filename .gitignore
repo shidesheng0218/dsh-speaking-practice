@@ -1,0 +1,7 @@
+node_modules/
+logs/
+backup/
+lab/.work/
+lab/_tmp/
+practice-logs/
+*.log

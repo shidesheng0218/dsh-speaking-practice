@@ -1,0 +1,8 @@
+# Bundle patch layer for dsh-speaking-practice.
+# Loads the host plugin as a Loader entry. The config path below points at this
+# workspace; adjust if the folder moves.
+- insert:
+    - id: voice-practice
+      name: dsh-speaking-practice
+      config:
+        practiceRoot: "/Users/eastbuy/Documents/梦想草稿/练习口语"

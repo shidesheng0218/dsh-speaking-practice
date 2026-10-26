@@ -1,0 +1,105 @@
+# dsh-speaking-practice
+
+在 DeepSeek Harness 桌面版里练英语口语的本地插件。打开后**不用打字、不用按键**：你对着电脑说话 → 本机 SenseVoice 转成文字 → 自动作为消息发给 Harness → 它回复时用 macOS 语音读给你听 → 你说完它继续听。朗读过程中你随时开口，它会停下来听你说。
+
+- 语音识别：DSH 自带的本地 SenseVoice（模型已在本机，离线可用）
+- 语音合成：macOS `say`（默认 Samantha 美音；可在配置里换音色/语速）
+- 对话模型：当前会话所用的模型
+- v0.1 只有 host 半 + `/voice` 命令；带麦克风按钮/波形/字幕的客户端 UI 在下一阶段
+
+## 安装
+
+插件已在 DSH 桌面版 profile 的 patch 层注册（见 `scripts/install-local.mjs`）。安装后无需重启，HMR 会自动加载。也可以从 Web GUI 侧栏「插件」页把本目录当作本地包安装（用于分发时的备用路径，见 `docs/install-notes.md`）。
+
+## 使用
+
+1. 在本目录（`练习口语`）下新建一个会话（工作区就是本文件夹）。
+2. 输入命令 `/voice on`。
+3. 听到 "Voice mode is on. I'm listening." 后开口说英语。
+   - 停顿约 0.6 秒自动断句；说完看到你的话出现在聊天里。
+   - Harness 回复时会被朗读出来；朗读中开口即打断。
+4. 结束：`/voice off`。查看状态：`/voice status`。
+5. 开发调试用 `/voice-reload` 重新加载插件代码（改完 `src/` 也会自动重载）。
+
+## 命令
+
+| 命令 | 作用 |
+|---|---|
+| `/voice on` | 在当前会话开启语音模式（麦克风常开） |
+| `/voice off` | 关闭语音模式，释放麦克风和播放进程 |
+| `/voice status` | 显示当前状态 |
+| `/voice-reload` | 重新加载插件实现（开发用） |
+
+## 配置
+
+在 profile patch 的 `insert[].config` 里覆盖（安装脚本默认只写 `practiceRoot`）：
+
+| 字段 | 默认 | 说明 |
+|---|---|---|
+| `practiceRoot` | 本目录 | 只对该工作区下的会话生效 |
+| `englishVoice` | `Samantha` | 英文音色（也可用 Daniel 英音） |
+| `chineseVoice` | `Tingting` | 中文音色（本机没有则跳过中文朗读） |
+| `rate` | `175` | 朗读语速（词/分钟） |
+| `language` | `auto` | 识别语言提示（en/auto/zh…） |
+| `silenceMs` | `600` | 说完判定（毫秒） |
+| `bargeIn` | `true` | 朗读中是否允许开口打断 |
+| `selfTest` | `false` | 加载后自动做一次硬件/识别自检（结果写日志，用后关掉） |
+
+## 自检
+
+`/voice selftest` 会立即跑一次集成自检：检查服务（subprocess / speechToText / commands / agents / createUserMessage）、列出识别器与音色、录 1.5 秒麦克风、用 `say` 合成一句话→转成 WAV→调用本地 SenseVoice 识别并回读文本，最后用 Samantha 播报一句。结果写到日志的 `SELFTEST` 行。
+
+本机实测结果：
+
+```
+SELFTEST PASS | subprocess=ok | speechToText=ok | commands=ok | agents=ok |
+createUserMessage=ok | providers=sensevoice-local | voices=174 | mic=ok |
+stt-transcribe=ok text="Hello, this is a speech recognition self test." | say=ok
+```
+
+## 已知限制 / 注意
+
+- **建议戴耳机**。外放时 TTS 声音会被麦克风拾取，可能误触发录音或打断。
+- 本机只装了 compact 级系统音色（Samantha 等），听感偏机械。想要更自然：系统设置 → 辅助功能 → 朗读内容 → 系统声音 → 管理声音，下载 Premium/Enhanced 音色，无需改代码。
+- 首次识别会懒启动 SenseVoice worker，可能有 1–3 秒延迟；`/voice on` 时已做预热。
+- 保存的语音不进入模型请求之外的内容：转写后的文字就是一条普通用户消息；录音只存在于内存/临时文件。
+- 只对 `practiceRoot` 下的会话生效；其它工作区不受影响。
+
+## 日志与排障
+
+运行日志：`logs/voice-practice.log`；装载/热重载日志：`logs/voice-loader.log`。
+
+常见问题：
+- 没有听到 "Voice mode is on"：看日志里 mic 是否启动；检查系统设置 → 隐私与安全性 → 麦克风 → DeepSeek Harness 是否允许。
+- 说了没反应：看日志里的 VAD 阈值与转写结果；环境嘈杂时调大 `silenceMs`，或把系统输入换成外接麦克风。
+- 第一次转写超时：看日志是否在准备模型（`~/.dsh/speech-to-text` 已缓存 230MB 模型）。
+
+## 架构（v0.1）
+
+```
+plugin.js（稳定 dev shell，被 profile patch 以绝对路径加载）
+  ├─ 动态 import ./src/index.js  (Cordis 插件，ctx.plugin 挂载)
+  ├─ /voice-reload 命令 + 监视 src/ 自动重载
+  └─ logs/voice-loader.log
+
+src/index.js（Cordis 插件）
+  ├─ Config（schemastery）
+  ├─ /voice on|off|status 命令
+  ├─ session/event 监听（assistant/message + turn/end → 朗读）
+  └─ VoiceLoop
+       ├─ src/mic.js   ffmpeg 常驻 PCM 采集
+       ├─ src/core/vad.js  能量 VAD（pre-roll/断句）
+       ├─ ctx.speechToText  本地 SenseVoice 转写
+       ├─ ctx.agents.get(id).agent.followup()  提交用户消息
+       └─ src/tts.js   say 分段朗读 / 打断
+```
+
+下一阶段：会话内麦克风按钮 + 实时字幕 + Listening/Thinking/Speaking 状态浮层（客户端插件），以及英语教练人设 / 场景课程 / 会话复盘。
+
+## 开发
+
+```bash
+node --test          # 纯逻辑单测（VAD / WAV / 文本 / 状态机）
+```
+
+改 `src/` 后无需重启：dev shell 会监视文件并自动重载，或手动 `/voice-reload`。
