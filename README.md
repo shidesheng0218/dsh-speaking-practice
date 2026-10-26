@@ -1,6 +1,9 @@
 # dsh-speaking-practice
 
-在 DeepSeek Harness 桌面版里练英语口语的本地插件。打开后**不用打字、不用按键**：你对着电脑说话 → 本机 SenseVoice 转成文字 → 自动作为消息发给 Harness → 它回复时用 macOS 语音读给你听 → 你说完它继续听。朗读过程中你随时开口，它会停下来听你说。
+在 DeepSeek Harness 桌面版里练英语口语的本地插件。
+
+仓库：<https://github.com/shidesheng0218/dsh-speaking-practice>
+打开后**不用打字、不用按键**：你对着电脑说话 → 本机 SenseVoice 转成文字 → 自动作为消息发给 Harness → 它回复时用 macOS 语音读给你听 → 你说完它继续听。朗读过程中你随时开口，它会停下来听你说。
 
 - 语音识别：DSH 自带的本地 SenseVoice（模型已在本机，离线可用）
 - 语音合成：macOS `say`（默认 Samantha 美音；可在配置里换音色/语速）
