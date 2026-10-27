@@ -14,6 +14,14 @@
 
 插件已在 DSH 桌面版 profile 的 patch 层注册（见 `scripts/install-local.mjs`）。安装后无需重启，HMR 会自动加载。也可以从 Web GUI 侧栏「插件」页把本目录当作本地包安装（用于分发时的备用路径，见 `docs/install-notes.md`）。
 
+## 客户端 UI（spike）
+
+输入框右侧（模型选择器左边）会出现 **🎙 语音** 按钮（客户端插件 `lib/client.js`，slot `conversation.input.right`）：
+
+- 点一下 = 相当于是往输入框写入并提交 `/voice on`；再点一下 = `/voice off`。
+- 按钮状态是本地乐观状态，暂时不带实时 Speaking/Listening 指示（等 v0.3 完整版接通道）。
+- 客户端 bundle 首次注册/更新后如果没有出现按钮：先刷新页面（Cmd+R）；仍没有则重启一次 DeepSeek Harness（客户端模块图在启动时组合最稳）。
+
 ## 使用
 
 1. 在本目录（`练习口语`）下新建一个会话（工作区就是本文件夹）。

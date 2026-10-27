@@ -179,7 +179,7 @@ export async function apply(ctx, rawConfig) {
       logger: log,
       mic,
       tts: speaker,
-      stt: sttAdapter,
+      stt: sttAdapter(),
       submit: (text) => submitTranscript(sessionId, text),
       requestVoiceOff: () => voiceOff('voice-command', true),
       onFatal: (error) => {

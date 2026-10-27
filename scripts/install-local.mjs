@@ -16,7 +16,7 @@
  *
  * Usage: node scripts/install-local.mjs [options]   (see --help)
  */
-import { existsSync, unlinkSync } from 'node:fs';
+import { existsSync, readFileSync, unlinkSync } from 'node:fs';
 import { isAbsolute, join, resolve } from 'node:path';
 import * as shared from './_shared.mjs';
 
@@ -31,7 +31,9 @@ const USAGE = [
   '  --profile-dir <path>   指定 profile 目录（默认 $DSH_HOME/profiles/desktop，即 ~/.dsh/profiles/desktop）',
   '  --profile <name>       用 profile 名称代替 --profile-dir（默认 desktop）',
   '  --root <path>          插件根目录（默认本脚本上一级目录）',
-  '  --entry <path>         patch 条目指向的入口文件（默认 <root>/plugin.js）',
+  '  --entry <path>         patch 条目指向的绝对入口文件（与 --entry-name 二选一）',
+  '  --entry-name <spec>    patch 条目 name 使用包名/specifier（默认：用 package.json name，',
+  '                         依赖 linked-root symlink 解析；--no-symlink 时回退到 <root>/plugin.js）',
   '  --backup-dir <path>    备份根目录（默认 <root>/backup）',
   '  --symlink              兼容选项（默认就会创建 linked-root symlink）',
   '  --no-symlink           不创建 linked-root symlink（若 src 里有 @deepseek-ai/* 导入，插件会 mount failed）',
@@ -56,7 +58,7 @@ function errorText(error) {
 }
 
 const parsed = shared.parseArgs(process.argv.slice(2), {
-  values: ['profile', 'profile-dir', 'root', 'entry', 'backup-dir', 'rollback'],
+  values: ['profile', 'profile-dir', 'root', 'entry', 'entry-name', 'backup-dir', 'rollback'],
   bools: ['dry-run', 'symlink', 'no-symlink', 'replace-symlink', 'help'],
 });
 
@@ -79,7 +81,27 @@ const pluginRoot = shared.resolveProjectRoot(parsed.values.root, import.meta.url
 const profileDir = shared.resolveProfileDir(parsed.values);
 const paths = shared.profilePaths(profileDir);
 const backupRoot = parsed.values['backup-dir'] === undefined ? join(pluginRoot, 'backup') : resolve(parsed.values['backup-dir']);
-const entryPath = parsed.values.entry === undefined ? join(pluginRoot, shared.ENTRY_FILE) : resolve(parsed.values.entry);
+const entryNameArg = parsed.values['entry-name'];
+function packageNameOf(root) {
+  try {
+    const manifest = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
+    return typeof manifest.name === 'string' && manifest.name.length > 0 ? manifest.name : null;
+  } catch {
+    return null;
+  }
+}
+const preferPackageName = parsed.values.entry === undefined
+  && entryNameArg === undefined
+  && parsed.bools['no-symlink'] !== true
+  && packageNameOf(pluginRoot) !== null;
+const entryPath = preferPackageName
+  ? packageNameOf(pluginRoot)
+  : entryNameArg !== undefined
+    ? entryNameArg
+    : parsed.values.entry === undefined
+      ? join(pluginRoot, shared.ENTRY_FILE)
+      : resolve(parsed.values.entry);
+const entryIsPath = isAbsolute(entryPath) || entryPath.startsWith('.') || entryPath.startsWith('file:');
 
 function resolveBackupArg(arg) {
   if (isAbsolute(arg)) return arg;
@@ -143,7 +165,7 @@ function main() {
 function buildPlan() {
   if (!existsSync(profileDir)) fail('profile 目录不存在: ' + profileDir);
   if (!existsSync(paths.packageJson)) fail('不是已初始化的 profile（缺少 package.json）: ' + profileDir);
-  if (!existsSync(entryPath)) fail('入口文件不存在: ' + entryPath + '（plugin.js 由插件根维护，可用 --entry 指定）');
+  if (entryIsPath && !existsSync(entryPath)) fail('入口文件不存在: ' + entryPath + '（plugin.js 由插件根维护，可用 --entry 指定）');
   const patchInfo = shared.readTextIfExists(paths.patchFile);
   if (patchInfo.exists && patchInfo.content === null) fail('profile patch 不是普通文件: ' + paths.patchFile);
   const patchContent = patchInfo.content === null ? '' : patchInfo.content;
@@ -202,7 +224,7 @@ function printPlan(plan) {
   shared.line('  profile 目录 : ' + profileDir);
   shared.line('  profile patch: ' + paths.patchFile + (plan.patchInfo.exists ? '（已存在）' : '（不存在，将创建）'));
   shared.line('  插件根       : ' + pluginRoot);
-  shared.line('  入口文件     : ' + entryPath);
+  shared.line('  条目 name    : ' + entryPath + (entryIsPath ? '' : '（包名，依赖 linked-root symlink）'));
   shared.line('  config       : practiceRoot = ' + pluginRoot);
   shared.line('');
   shared.line('  bare import 扫描: ' + (plan.bare.specifiers.length === 0 ? '未发现' : plan.bare.specifiers.join(', ')));
@@ -310,7 +332,7 @@ function verifyInstalled(plan) {
   const blocks = shared.findManagedBlocks(patchNow.content);
   if (blocks.length !== 1) throw new Error('写入后 managed 块数量异常（应为 1，实际 ' + blocks.length + '）');
   if (!patchNow.content.includes(shared.managedBlockText(plan.fields))) throw new Error('写入后找不到期望的 YAML 块');
-  if (!existsSync(entryPath)) throw new Error('入口文件在安装后消失: ' + entryPath);
+  if (entryIsPath && !existsSync(entryPath)) throw new Error('入口文件在安装后消失: ' + entryPath);
   if (plan.needLink) {
     const linkNow = shared.inspectLink(paths.linkPath);
     if (linkNow.kind !== 'symlink' || !shared.linkOwnedBy(linkNow, pluginRoot)) {

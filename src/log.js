@@ -99,3 +99,4 @@ export class VoiceLog {
 export function createLog(options) {
   return new VoiceLog(options);
 }
+

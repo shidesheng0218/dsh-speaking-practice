@@ -4,13 +4,16 @@
   "private": true,
   "description": "Voice conversation mode for English speaking practice in DeepSeek Harness",
   "type": "module",
-  "main": "src/index.js",
+  "main": "plugin.js",
   "exports": {
-    ".": "./src/index.js",
+    ".": "./plugin.js",
+    "./client": "./lib/client.js",
     "./package.json": "./package.json"
   },
   "files": [
+    "plugin.js",
     "src",
+    "lib",
     "cordis.patch.yml",
     "README.md",
     "icon.svg"
@@ -24,6 +27,9 @@
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web"
     }
   }
 }

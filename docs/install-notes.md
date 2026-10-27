@@ -362,3 +362,14 @@ cp "backup/<时间戳>/cordis.patch.yml" "/Users/eastbuy/.dsh/profiles/desktop/c
 | plugin.js 日志格式 | 本仓库 `plugin.js:16-34,97,125` |
 
 以上行号基于本机解包产物 `/tmp/dsh-asar-extract`（app.asar，0.2.1-rc.3）；升级 DSH 后行号可能偏移，结论以同版本源码复核为准。
+
+
+---
+
+## 客户端半（browser half）说明
+
+v0.3 spike 起，包内增加了浏览器半：`lib/client.js` + package.json 的 `dsh.client` / `exports["./client"]`。
+
+- `dsh-client-modules` 从 **Loader 条目解析到的最近 package.json** 读取 `dsh.client`，因此 patch 条目的 `name` 用 **包名**（默认，脚本已改为该行为）时最稳；用绝对路径也能在启动时被识别，但 `dsh-client-modules` 对"不是客户端包"的判定会按 Loader specifier 缓存到重启，所以**热加客户端半**可能不生效。
+- 客户端半更新后：刷新 Web GUI；首次新增客户端半或模块图异常时重启 App。
+- 入口文件/包名切换会触发 profile 重组（HMR 监听 patch 文件）。本次实测：把条目 name 从绝对路径切到 `dsh-speaking-practice` 后，宿主插件热重载成功。
