@@ -1,9 +1,12 @@
 /**
- * index.js - Cordis host entry for dsh-speaking-practice v0.1.
+ * index.js - Cordis host entry for dsh-speaking-practice v0.2.
  *
  * Registers the /voice command, owns the single active voice session, forwards
  * session events into the voice loop, injects transcripts as user messages and
- * speaks assistant replies through macOS say.
+ * speaks assistant replies through macOS say. v0.2 also wires in the coach
+ * protocol (src/coach.js): /voice on loads content/, selects a scenario and
+ * installs the coach section on the current agent's system prompt; /voice off
+ * and plugin dispose release it again.
  *
  * Defensive service lookup: ctx.commands / ctx.speechToText / ctx.subprocess /
  * ctx.agents are resolved with ctx.get(name) and a missing service is logged
@@ -32,13 +35,14 @@ const IMPORT_VERSION = (() => {
 })();
 
 async function loadLocalModules() {
-  const [logModule, micModule, ttsModule, loopModule, optionsModule, textModule] = await Promise.all([
+  const [logModule, micModule, ttsModule, loopModule, optionsModule, textModule, coachModule] = await Promise.all([
     import('./log.js' + IMPORT_VERSION),
     import('./mic.js' + IMPORT_VERSION),
     import('./tts.js' + IMPORT_VERSION),
     import('./core/loop.js' + IMPORT_VERSION),
     import('./core/options.js' + IMPORT_VERSION),
     import('./core/text.js' + IMPORT_VERSION),
+    import('./coach.js' + IMPORT_VERSION),
   ]);
   return {
     createLog: logModule.createLog,
@@ -49,6 +53,10 @@ async function loadLocalModules() {
     normalizeOptions: optionsModule.normalizeOptions,
     resolveLogPath: optionsModule.resolveLogPath,
     summarizeText: textModule.summarizeText,
+    createCoachController: coachModule.createCoachController,
+    ensureRecapDir: coachModule.ensureRecapDir,
+    loadScenarios: coachModule.loadScenarios,
+    resolvePracticeDir: coachModule.resolvePracticeDir,
   };
 }
 
@@ -104,6 +112,10 @@ export async function apply(ctx, rawConfig) {
     normalizeOptions,
     resolveLogPath,
     summarizeText,
+    createCoachController,
+    ensureRecapDir,
+    loadScenarios,
+    resolvePracticeDir,
   } = await loadLocalModules();
   const options = normalizeOptions(rawConfig);
   const logPath = resolveLogPath(options.practiceRoot, options.logFile);
@@ -116,6 +128,7 @@ export async function apply(ctx, rawConfig) {
     speechToText: safeGet(ctx, 'speechToText'),
     subprocess: safeGet(ctx, 'subprocess'),
     agents: safeGet(ctx, 'agents'),
+    systemPrompt: safeGet(ctx, 'systemPrompt'),
   };
   for (const serviceName of Object.keys(services)) {
     if (services[serviceName] === null) {
@@ -141,7 +154,11 @@ export async function apply(ctx, rawConfig) {
 
   let active = null;
 
-  async function voiceOn(agent) {
+  // v0.2 coach protocol: loads <pluginRoot>/content + profile.md on every
+  // /voice on, composes one system-prompt section and owns its disposer.
+  const coach = createCoachController({ log });
+
+  async function voiceOn(agent, scenarioQuery = '') {
     const session = agent !== null && typeof agent === 'object' ? agent.session : null;
     const sessionId = session !== null && typeof session === 'object' && typeof session.id === 'string'
       ? session.id
@@ -167,9 +184,44 @@ export async function apply(ctx, rawConfig) {
     if (speaker === null) {
       return { kind: 'error', text: '/voice on unavailable: TTS adapter could not be created (see ' + logPath + ')' };
     }
+    // Resolve the scenario before touching a running session: a mistyped id
+    // must not interrupt voice mode that is already listening.
+    const prepared = await coach.prepare(scenarioQuery);
+    if (!prepared.ok) {
+      const available = prepared.available.length === 0 ? '(none)' : prepared.available.join(', ');
+      return {
+        kind: 'error',
+        text: '/voice on: ' + prepared.error + '. Available scenarios: ' + available,
+      };
+    }
     if (active !== null) {
-      log.info('voice mode restart requested; stopping the previous session first');
+      log.info('voice mode restart requested; stopping the previous session and its coach prompt first');
       await voiceOff('restart', false);
+    }
+    // The recap template asks the model to write practice/YYYY-MM-DD-HHmm-<scenario>.md,
+    // so the directory has to exist before the first turn; failure only warns.
+    const practiceDir = resolvePracticeDir(options.practiceRoot, cwd);
+    await ensureRecapDir(practiceDir, log);
+    // Injection failure never blocks voice mode: the loop keeps running and the
+    // status command/log report coach: off with the reason.
+    let activation = null;
+    try {
+      activation = await coach.activate({
+        agent,
+        ctx,
+        scenarioQuery,
+        practiceDir,
+        materials: prepared.materials,
+      });
+    } catch (error) {
+      log.error('coach activation threw; continuing without the coach prompt: ' + errorText(error));
+    }
+    const scenario = activation !== null && activation.scenario !== undefined && activation.scenario !== null
+      ? activation.scenario
+      : prepared.scenario;
+    const coachScope = activation !== null && activation.injected === true ? activation.scope : '';
+    if (coachScope === '') {
+      log.warn('coach prompt is not active; voice mode continues without it (see ' + logPath + ')');
     }
     const mic = createMic({ subprocess: services.subprocess, config: options, log });
     const loop = new VoiceLoop({
@@ -189,11 +241,12 @@ export async function apply(ctx, rawConfig) {
         });
       },
     });
-    active = { sessionId, cwd, loop, mic, startedAt: Date.now() };
+    active = { sessionId, cwd, loop, mic, startedAt: Date.now(), scenarioId: scenario.id, coachScope, practiceDir };
     try {
       await loop.start();
     } catch (error) {
       active = null;
+      await coach.release();
       const tail = error !== null && typeof error === 'object' && typeof error.stderrTail === 'string'
         ? error.stderrTail
         : '';
@@ -215,10 +268,14 @@ export async function apply(ctx, rawConfig) {
     loop.announce('Voice mode is on. I am listening.').catch((error) => {
       log.warn('on announcement failed: ' + errorText(error));
     });
-    log.info('voice mode ON session=' + shortId(sessionId) + ' cwd=' + cwd);
+    log.info('voice mode ON session=' + shortId(sessionId) + ' cwd=' + cwd
+      + ' scenario=' + scenario.id + ' coach=' + (coachScope === '' ? 'off' : coachScope));
     return {
       kind: 'success',
-      text: 'Voice mode ON. Listening on session ' + shortId(sessionId)
+      text: 'Voice mode ON. Scenario: ' + scenario.id
+        + (typeof scenario.nameZh === 'string' && scenario.nameZh !== '' ? ' (' + scenario.nameZh + ')' : '')
+        + '. Coach prompt: ' + (coachScope === '' ? 'OFF (see ' + logPath + ')' : 'on (' + coachScope + ' scope)')
+        + '. Listening on session ' + shortId(sessionId)
         + '. Say "stop listening" or use /voice off to exit.',
     };
   }
@@ -226,6 +283,9 @@ export async function apply(ctx, rawConfig) {
   async function voiceOff(reason, shouldAnnounce = true) {
     const current = active;
     active = null;
+    // Remove the coach section before stopping the loop so the next model step
+    // can never be assembled from a half-released prompt.
+    await coach.release();
     if (current !== null) {
       try {
         await current.loop.stop(reason);
@@ -242,10 +302,30 @@ export async function apply(ctx, rawConfig) {
     return { wasActive: current !== null };
   }
 
+  /** One /voice status line describing the coach prompt injection. */
+  function coachStatusLine() {
+    const status = coach.status();
+    if (status.active === true) return 'coach: on (scope=' + status.scope + ', ' + status.textLength + ' chars)';
+    // Only surface the failure while voice mode is on; otherwise the reason
+    // would be a stale leftover from a previous session.
+    const detail = active !== null && status.error !== ''
+      ? ' (injection failed: ' + summarizeText(status.error, 100) + ')'
+      : '';
+    return 'coach: off' + detail;
+  }
+
   function voiceStatus() {
     const current = active;
     if (current === null) {
-      return { kind: 'success', text: 'Voice mode: off.\nLog: ' + logPath };
+      return {
+        kind: 'success',
+        text: [
+          'Voice mode: off.',
+          'scenario: (none)',
+          coachStatusLine(),
+          'log: ' + logPath,
+        ].join('\n'),
+      };
     }
     let status;
     try {
@@ -256,6 +336,9 @@ export async function apply(ctx, rawConfig) {
     const lines = [
       'Voice mode: ON (' + status.state + ')',
       'session: ' + shortId(status.sessionId) + '  cwd=' + (status.cwd === '' ? '?' : status.cwd),
+      'scenario: ' + (typeof current.scenarioId === 'string' && current.scenarioId !== '' ? current.scenarioId : '?')
+        + (typeof current.practiceDir === 'string' && current.practiceDir !== '' ? '  practice=' + current.practiceDir : ''),
+      coachStatusLine(),
       'mic: ' + (status.micRunning ? 'capturing' : 'stopped'),
       'last transcript: ' + (status.lastTranscript === '' ? '(none)' : summarizeText(status.lastTranscript, 100)),
       'last error: ' + (status.lastError === '' ? '(none)' : summarizeText(status.lastError, 120)),
@@ -263,6 +346,29 @@ export async function apply(ctx, rawConfig) {
       'log: ' + logPath,
     ];
     return { kind: 'success', text: lines.join('\n') };
+  }
+
+  /** List the scenarios found in content/scenarios (or the built-in fallback). */
+  async function voiceScenarios() {
+    let listing;
+    try {
+      listing = await loadScenarios({ log });
+    } catch (error) {
+      return { kind: 'error', text: '/voice scenarios failed: ' + errorText(error) + ' (log: ' + logPath + ')' };
+    }
+    const lines = listing.scenarios.map((scenario) => {
+      const zh = typeof scenario.nameZh === 'string' && scenario.nameZh !== '' ? ' — ' + scenario.nameZh : '';
+      const level = typeof scenario.level === 'string' && scenario.level !== '' ? scenario.level : 'level ?';
+      const source = scenario.source === 'builtin' ? ' (built-in fallback)' : '';
+      return '- ' + scenario.id + zh + ' [' + level + ']' + source;
+    });
+    const footer = listing.fallback
+      ? '\nNo usable content/scenarios/*.json yet; the built-in fallback is in use.'
+      : '';
+    return {
+      kind: 'success',
+      text: ['Available scenarios (' + listing.scenarios.length + '):'].concat(lines).join('\n') + footer,
+    };
   }
 
   function sttAdapter() {
@@ -305,11 +411,13 @@ export async function apply(ctx, rawConfig) {
   async function handleCommand(invocation) {
     const raw = invocation !== null && typeof invocation === 'object'
       && typeof invocation.rawInput === 'string'
-      ? invocation.rawInput.trim().toLowerCase()
+      ? invocation.rawInput.trim()
       : '';
+    const lower = raw.toLowerCase();
     try {
-      if (raw === '' || raw === 'status') return voiceStatus();
-      if (raw === 'selftest') {
+      if (lower === '' || lower === 'status') return voiceStatus();
+      if (lower === 'scenarios' || lower === 'list') return await voiceScenarios();
+      if (lower === 'selftest') {
         if (options.selfTest !== true) {
           // Allow the diagnostic to run on demand even when startup self-test is off.
           setTimeout(() => {
@@ -319,8 +427,9 @@ export async function apply(ctx, rawConfig) {
         }
         return { kind: 'success', text: 'Self-test already enabled for this mount; see ' + logPath };
       }
-      if (raw === 'on') return await voiceOn(invocation.agent);
-      if (raw === 'off') {
+      if (lower === 'on') return await voiceOn(invocation.agent, '');
+      if (lower.startsWith('on ')) return await voiceOn(invocation.agent, raw.slice(3).trim());
+      if (lower === 'off') {
         const result = await voiceOff('command', true);
         return {
           kind: 'success',
@@ -329,7 +438,10 @@ export async function apply(ctx, rawConfig) {
             : 'Voice mode is already off.',
         };
       }
-      return { kind: 'error', text: 'Usage: /voice on | off | status (received "' + raw + '")' };
+      return {
+        kind: 'error',
+        text: 'Usage: /voice on [scenario] | off | scenarios | status (received "' + raw + '")',
+      };
     } catch (error) {
       const message = errorText(error);
       log.error('/voice ' + raw + ' failed: ' + message);
@@ -341,7 +453,7 @@ export async function apply(ctx, rawConfig) {
     try {
       const disposeCommand = services.commands.register({
         name: 'voice',
-        description: 'Hands-free English practice: listen, transcribe and speak replies',
+        description: 'Hands-free English practice: coach prompt, scenario and spoken replies',
         input: { hint: 'on | off | status' },
         handler: handleCommand,
       });
@@ -368,6 +480,13 @@ export async function apply(ctx, rawConfig) {
   ctx.effect(() => async () => {
     const current = active;
     active = null;
+    // Hot reload / uninstall must not leave an agent-scoped coach section
+    // behind: release it even if the agent itself outlives this plugin mount.
+    try {
+      await coach.release();
+    } catch (error) {
+      log.warn('coach prompt release during dispose failed: ' + errorText(error));
+    }
     if (current !== null) {
       try {
         await current.loop.stop('dispose');

@@ -1,0 +1,64 @@
+{
+  "id": "job-interview",
+  "name": "English Job Interview",
+  "nameZh": "英文面试",
+  "level": "B1-B2",
+  "durationMinutes": 12,
+  "goal": "用 STAR 结构完成 4 轮英文面试回答，并在结尾提出 2 个反问。",
+  "roles": {
+    "coach": "友好的 hiring manager，会追问细节，语速正常，允许学习者思考几秒。",
+    "learner": "应聘该岗位的候选人，自信但不夸张。"
+  },
+  "opening": "Thanks for coming in today. To start, could you tell me a little about yourself?",
+  "beats": [
+    {
+      "id": "self-intro",
+      "intent": "用 2-3 句介绍当前身份、最相关的经验和优势。",
+      "coachMove": "听完只追问一个优势细节，比如 'What's one thing you're best at?'。"
+    },
+    {
+      "id": "experience",
+      "intent": "讲最近一个项目：做了什么、你负责什么、结果如何。",
+      "coachMove": "追问 'What was your specific contribution?'，要一个数字或结果。"
+    },
+    {
+      "id": "challenge",
+      "intent": "用 STAR 讲一次困难：情境、任务、行动、结果。",
+      "coachMove": "卡住时给开头 'The main challenge was...'，再追问 'What did you learn?'。"
+    },
+    {
+      "id": "motivation",
+      "intent": "说明为什么想要这份工作、为什么是这家公司。",
+      "coachMove": "问 'Why us, and why now?'，要求一个具体理由，不接受空话。"
+    },
+    {
+      "id": "questions-for-us",
+      "intent": "向面试官提出 2 个关于团队或岗位的问题。",
+      "coachMove": "认真回答，再反问 'Anything else you'd like to know?'。"
+    }
+  ],
+  "usefulPhrases": [
+    "I'd describe myself as ...",
+    "In my last role, I ...",
+    "I was responsible for ...",
+    "The main challenge was ...",
+    "I took the lead on ...",
+    "What I learned was ...",
+    "That's exactly why I applied.",
+    "Could you tell me more about ...?"
+  ],
+  "successCriteria": [
+    "每个回答至少 3 句，有结构不散。",
+    "至少一个回答按 STAR 四步讲完。",
+    "至少给出一个具体数字或结果。",
+    "结尾提出 2 个关于岗位或团队的反问。",
+    "卡顿时用一句缓冲语争取时间。"
+  ],
+  "wrapUp": "Thanks, that's all from my side. Before we finish, is there anything you'd like to add?",
+  "recapFocus": [
+    "过去时与现在完成时是否混用。",
+    "STAR 四步是否齐全。",
+    "有没有用 managed、led、improved 这类动词。",
+    "停顿是否过长，缓冲语是否自然。"
+  ]
+}

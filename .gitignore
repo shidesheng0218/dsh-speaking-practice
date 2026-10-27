@@ -3,5 +3,6 @@ logs/
 backup/
 lab/.work/
 lab/_tmp/
+practice/
 practice-logs/
 *.log

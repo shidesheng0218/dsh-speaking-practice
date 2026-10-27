@@ -1,0 +1,58 @@
+{
+  "id": "daily-chat",
+  "name": "Everyday Small Talk",
+  "nameZh": "日常闲聊",
+  "level": "B1",
+  "durationMinutes": 10,
+  "goal": "用 3-4 轮自然对话聊完一个日常话题，并主动反问教练至少一次。",
+  "roles": {
+    "coach": "友善的语言交换伙伴，语气轻松、语速正常，像认识很久的朋友。",
+    "learner": "想练口语的朋友，聊自己的真实生活，不用准备稿子。"
+  },
+  "opening": "Hey, good to hear from you! So, how's your week been so far?",
+  "beats": [
+    {
+      "id": "warm-up",
+      "intent": "用一两句说说这周过得怎么样。",
+      "coachMove": "先自答一句，再追问一件具体小事，比如 'Did anything fun happen?'。"
+    },
+    {
+      "id": "story",
+      "intent": "讲最近发生的一件小事：做了什么、和谁、感觉如何。",
+      "coachMove": "追问 'What happened next?' 和 'How did that feel?'，不打断、不逐句纠错。"
+    },
+    {
+      "id": "opinion",
+      "intent": "对一个日常话题给出看法和理由。",
+      "coachMove": "问 'Why do you think that?'，再给一个相反选项让学习者回应。"
+    },
+    {
+      "id": "return-question",
+      "intent": "主动反问教练一个问题，把对话接下去。",
+      "coachMove": "等学习者提问，回答一两句后把话题抛回，比如 'What about you?'。"
+    }
+  ],
+  "usefulPhrases": [
+    "How's your week been so far?",
+    "I've been really into ...",
+    "That reminds me of ...",
+    "It was totally worth it.",
+    "I'm not sure, to be honest.",
+    "What do you usually do when ...?",
+    "Speaking of which, ...",
+    "How about you?"
+  ],
+  "successCriteria": [
+    "连续说 3 句以上，中途不用中文求助。",
+    "至少用一次追问句让对话继续。",
+    "自然用上 1 个 usefulPhrases 里的表达。",
+    "语气像聊天，不像背课文。"
+  ],
+  "wrapUp": "That was a fun chat. Let's stop here — what's one phrase from today you want to use again this week?",
+  "recapFocus": [
+    "冠词与一般过去时是否准确。",
+    "追问句的升调是否自然。",
+    "um / like 等填充词的频率。",
+    "有没有主动反问，而不是只回答。"
+  ]
+}

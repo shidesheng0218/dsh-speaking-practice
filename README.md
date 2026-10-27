@@ -2,6 +2,8 @@
 
 在 DeepSeek Harness 桌面版里练英语口语的本地插件。
 
+当前 v0.2：免按键语音循环 + 教练模式（场景化练习、温和纠错、结束自动写复盘）。
+
 仓库：<https://github.com/shidesheng0218/dsh-speaking-practice>
 打开后**不用打字、不用按键**：你对着电脑说话 → 本机 SenseVoice 转成文字 → 自动作为消息发给 Harness → 它回复时用 macOS 语音读给你听 → 你说完它继续听。朗读过程中你随时开口，它会停下来听你说。
 
@@ -36,10 +38,44 @@
 
 | 命令 | 作用 |
 |---|---|
-| `/voice on` | 在当前会话开启语音模式（麦克风常开） |
+| `/voice on [场景]` | 开启语音模式（麦克风常开）；可带场景 id 或唯一前缀，如 `interview` |
+| `/voice scenarios` | 列出可用场景 |
 | `/voice off` | 关闭语音模式，释放麦克风和播放进程 |
 | `/voice status` | 显示当前状态 |
 | `/voice-reload` | 重新加载插件实现（开发用） |
+
+## 教练模式（v0.2）
+
+`/voice on` 时插件会把以下内容组合成一段**只对当前会话生效**的系统提示词（agent 作用域）：
+
+1. `content/coach.md` —— 教练协议（英文、1–3 句、温和 recast、每轮一个追问）
+2. `profile.md` —— 你的水平/目标/偏好
+3. `content/scenarios/<id>.json` —— 场景卡（角色、目标、开场、推进节点、可用句型、成功标准）
+4. `content/recap-template.md` —— 复盘模板
+5. 今天的日期（用于复盘文件名）
+
+场景：
+
+| id | 场景 | 级别 |
+|---|---|---|
+| `daily-chat` | 日常闲聊（默认） | B1 |
+| `job-interview` | 英文面试（自我介绍/经历/挑战/动机/反问） | B1–B2 |
+
+练习结束时对麦克风说 **"end session"**（或 "finish / stop practice"）。教练会做口头收尾，并按模板把复盘写到 `practice/YYYY-MM-DD-HHmm-<场景>.md`。`practice/` 目录默认不进 Git（学习记录留在本地）。
+
+## 素材库
+
+| 路径 | 内容 |
+|---|---|
+| `content/coach.md` | 教练协议（核心） |
+| `content/scenarios/*.json` | 场景卡 |
+| `content/topics.json` | 20 个话题 + 追问 |
+| `content/corrections/common-errors.md` | 20 条中文母语者高频错误 |
+| `content/pronunciation/drills.json` | 10 组最小对立体 + 30 句跟读 |
+| `content/recap-template.md` | 复盘模板 |
+| `profile.md` | 学习者画像（可直接改） |
+
+素材都是纯文本，可自行修改；改完下次 `/voice on` 生效（素材在开启时读取）。新增场景：在 `content/scenarios/` 加一个 JSON（格式见 `docs/coach-content-spec.md`）。
 
 ## 配置
 

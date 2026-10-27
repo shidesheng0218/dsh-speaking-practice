@@ -1,0 +1,256 @@
+{
+  "minimalPairs": [
+    {
+      "pair": [
+        "ship",
+        "sheep"
+      ],
+      "focus": "短元音 /ɪ/ 与长元音 /iː/"
+    },
+    {
+      "pair": [
+        "full",
+        "fool"
+      ],
+      "focus": "短元音 /ʊ/ 与长元音 /uː/"
+    },
+    {
+      "pair": [
+        "bad",
+        "bed"
+      ],
+      "focus": "元音 /æ/ 与 /e/"
+    },
+    {
+      "pair": [
+        "cat",
+        "cut"
+      ],
+      "focus": "元音 /æ/ 与 /ʌ/"
+    },
+    {
+      "pair": [
+        "thin",
+        "tin"
+      ],
+      "focus": "th /θ/ 与 t /t/"
+    },
+    {
+      "pair": [
+        "three",
+        "tree"
+      ],
+      "focus": "辅音连缀 θr 与 tr"
+    },
+    {
+      "pair": [
+        "right",
+        "light"
+      ],
+      "focus": "r /r/ 与 l /l/"
+    },
+    {
+      "pair": [
+        "pray",
+        "play"
+      ],
+      "focus": "辅音连缀 pr 与 pl"
+    },
+    {
+      "pair": [
+        "vest",
+        "west"
+      ],
+      "focus": "v /v/ 与 w /w/"
+    },
+    {
+      "pair": [
+        "sip",
+        "zip"
+      ],
+      "focus": "清音 s /s/ 与浊音 z /z/"
+    }
+  ],
+  "sentences": [
+    {
+      "id": "drill-01",
+      "focus": "th 音",
+      "text": "I think this is the third thing I've tried today.",
+      "tipZh": "舌尖轻触上齿，气流从齿缝送出"
+    },
+    {
+      "id": "drill-02",
+      "focus": "th 音",
+      "text": "Both of my brothers are thirty-three this month.",
+      "tipZh": "th 别读成 s 或 f"
+    },
+    {
+      "id": "drill-03",
+      "focus": "th 音",
+      "text": "The weather is warmer on Thursday than it was yesterday.",
+      "tipZh": "the、this 的 th 要振动声带"
+    },
+    {
+      "id": "drill-04",
+      "focus": "th 音",
+      "text": "I thought you said something about the north path.",
+      "tipZh": "句尾 th 轻收，不要拖音"
+    },
+    {
+      "id": "drill-05",
+      "focus": "r-l 区分",
+      "text": "Please bring the blue truck around the corner slowly.",
+      "tipZh": "r 卷舌不碰牙，l 舌尖抵上齿"
+    },
+    {
+      "id": "drill-06",
+      "focus": "r-l 区分",
+      "text": "Really, Larry? You already read that long article?",
+      "tipZh": "r 音圆唇，l 音舌尖抬起"
+    },
+    {
+      "id": "drill-07",
+      "focus": "r-l 区分",
+      "text": "I'd rather walk along the river than ride a bike.",
+      "tipZh": "对比 river 的 r 和 walk 的 l"
+    },
+    {
+      "id": "drill-08",
+      "focus": "v-w 区分",
+      "text": "We were very worried when the wind woke the baby.",
+      "tipZh": "v 上齿咬下唇，w 只圆唇"
+    },
+    {
+      "id": "drill-09",
+      "focus": "v-w 区分",
+      "text": "Which van will arrive at the west gate at five?",
+      "tipZh": "v 摩擦出声，w 不咬唇"
+    },
+    {
+      "id": "drill-10",
+      "focus": "v-w 区分",
+      "text": "Victor wants a window seat with a view.",
+      "tipZh": "w 开头圆唇，别读成 v"
+    },
+    {
+      "id": "drill-11",
+      "focus": "短长元音",
+      "text": "This cheap ship trip is still a big deal.",
+      "tipZh": "短 /ɪ/ 放松，长 /iː/ 拉长"
+    },
+    {
+      "id": "drill-12",
+      "focus": "短长元音",
+      "text": "I need to leave this little list for the team.",
+      "tipZh": "leave 拉长，live 短促"
+    },
+    {
+      "id": "drill-13",
+      "focus": "短长元音",
+      "text": "The fool pulled a full bowl of fruit from the pool.",
+      "tipZh": "full 短 /ʊ/，fool 长 /uː/"
+    },
+    {
+      "id": "drill-14",
+      "focus": "短长元音",
+      "text": "That bad bed looks better than the red one.",
+      "tipZh": "bad 嘴张大，bed 稍收"
+    },
+    {
+      "id": "drill-15",
+      "focus": "短长元音",
+      "text": "The cat sat on the cut mat and stared at me.",
+      "tipZh": "cat 的 /æ/ 比 cut 更扁更前"
+    },
+    {
+      "id": "drill-16",
+      "focus": "辅音连缀",
+      "text": "Three strong students started their spring project.",
+      "tipZh": "三个辅音连读，别加元音"
+    },
+    {
+      "id": "drill-17",
+      "focus": "辅音连缀",
+      "text": "Please play the piano while I pray for good news.",
+      "tipZh": "pl 与 pr 要分清楚"
+    },
+    {
+      "id": "drill-18",
+      "focus": "辅音连缀",
+      "text": "The street was crowded with strange, stressed travelers.",
+      "tipZh": "str 连缀一气呵成"
+    },
+    {
+      "id": "drill-19",
+      "focus": "辅音连缀",
+      "text": "She spends her weekends practising spoken English with friends.",
+      "tipZh": "sp、sk 连读不加 ə"
+    },
+    {
+      "id": "drill-20",
+      "focus": "重音节奏",
+      "text": "I want to go there, but I can't find the time.",
+      "tipZh": "重读 want、go、can't、time"
+    },
+    {
+      "id": "drill-21",
+      "focus": "重音节奏",
+      "text": "It's the best coffee I've had in a long time.",
+      "tipZh": "实词重读，虚词弱读"
+    },
+    {
+      "id": "drill-22",
+      "focus": "重音节奏",
+      "text": "Could you speak a little slower, please?",
+      "tipZh": "请求句尾音上扬更礼貌"
+    },
+    {
+      "id": "drill-23",
+      "focus": "重音节奏",
+      "text": "I was going to call you, but I forgot.",
+      "tipZh": "was、to、but 弱读成轻声"
+    },
+    {
+      "id": "drill-24",
+      "focus": "th 音",
+      "text": "My father and mother both love that thick soup.",
+      "tipZh": "father 的 th 振动，thick 不振动"
+    },
+    {
+      "id": "drill-25",
+      "focus": "r-l 区分",
+      "text": "The little girl rolled the red ball really far.",
+      "tipZh": "girl 的 l 与 rolled 的 r 对比"
+    },
+    {
+      "id": "drill-26",
+      "focus": "v-w 区分",
+      "text": "We've visited Vienna twice with our very kind driver.",
+      "tipZh": "v 与 w 开头的词交替练"
+    },
+    {
+      "id": "drill-27",
+      "focus": "短长元音",
+      "text": "He shipped a sheep to the beach last week.",
+      "tipZh": "ship 短、sheep 长，对比练"
+    },
+    {
+      "id": "drill-28",
+      "focus": "辅音连缀",
+      "text": "I'd like a glass of fresh orange juice, please.",
+      "tipZh": "gl、fr、dʒ 连着读"
+    },
+    {
+      "id": "drill-29",
+      "focus": "重音节奏",
+      "text": "I'd rather stay home tonight than go out again.",
+      "tipZh": "rather、home、tonight 重读"
+    },
+    {
+      "id": "drill-30",
+      "focus": "语调",
+      "text": "Are you sure you want to try it again?",
+      "tipZh": "一般疑问句句尾升调"
+    }
+  ]
+}

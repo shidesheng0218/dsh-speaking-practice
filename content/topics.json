@@ -1,0 +1,182 @@
+[
+  {
+    "id": "morning-routine",
+    "prompt": "What does a typical morning look like for you, from waking up to leaving home?",
+    "followups": [
+      "What's the first thing you do after you get up?",
+      "Is there one part of your morning you'd like to change?",
+      "How is your weekend morning different?"
+    ]
+  },
+  {
+    "id": "weekend-plans",
+    "prompt": "What are you planning to do this weekend?",
+    "followups": [
+      "Who are you spending it with?",
+      "Do you usually plan your weekends or decide on the day?",
+      "What would your perfect weekend look like?"
+    ]
+  },
+  {
+    "id": "hobbies",
+    "prompt": "What's something you've been really into lately?",
+    "followups": [
+      "How did you get started with it?",
+      "How much time do you spend on it each week?",
+      "Would you recommend it to a beginner?"
+    ]
+  },
+  {
+    "id": "reading",
+    "prompt": "What kind of books or articles do you enjoy reading?",
+    "followups": [
+      "Where do you usually read, at home or on the way?",
+      "What was the last thing you read that stayed with you?",
+      "Do you prefer paper books or reading on your phone?"
+    ]
+  },
+  {
+    "id": "travel-destination",
+    "prompt": "If you could take a trip next month, where would you go?",
+    "followups": [
+      "What would you want to do there?",
+      "Would you go alone or with friends?",
+      "What's the best trip you've taken so far?"
+    ]
+  },
+  {
+    "id": "travel-style",
+    "prompt": "Are you a planner when you travel, or do you decide things on the way?",
+    "followups": [
+      "What's one thing you always pack?",
+      "Have you ever had a trip go wrong? What happened?",
+      "Do you like trying local food when you travel?"
+    ]
+  },
+  {
+    "id": "city-life",
+    "prompt": "What do you like most about the city you live in?",
+    "followups": [
+      "What's one thing you'd change about it?",
+      "How long have you lived there?",
+      "Is it easy to meet new people there?"
+    ]
+  },
+  {
+    "id": "culture-shock",
+    "prompt": "What's something about life in another country that surprised you?",
+    "followups": [
+      "Did it change how you see your own culture?",
+      "What would be hardest for you about living abroad?",
+      "What's one local habit you'd like to try?"
+    ]
+  },
+  {
+    "id": "work-day",
+    "prompt": "What does a typical workday look like for you?",
+    "followups": [
+      "Which part of the day do you enjoy most?",
+      "Do you work better in the morning or in the evening?",
+      "What's one thing you'd like to improve at work?"
+    ]
+  },
+  {
+    "id": "dream-job",
+    "prompt": "If money weren't a problem, what job would you choose?",
+    "followups": [
+      "What attracts you to it?",
+      "What skills would you need to learn?",
+      "Would you still work if you didn't need the money?"
+    ]
+  },
+  {
+    "id": "learning-english",
+    "prompt": "What's the hardest part of learning English for you?",
+    "followups": [
+      "What helps you most when you get stuck?",
+      "How do you practise speaking outside class?",
+      "Which is easier for you, listening or speaking?"
+    ]
+  },
+  {
+    "id": "study-habits",
+    "prompt": "How do you usually learn something new, by reading, watching videos, or trying it?",
+    "followups": [
+      "What's something you learned recently?",
+      "Do you take notes, or just remember it?",
+      "What's one study habit that works for you?"
+    ]
+  },
+  {
+    "id": "technology",
+    "prompt": "What's one piece of technology you couldn't live without?",
+    "followups": [
+      "How would your day change without it?",
+      "Which app do you open most often?",
+      "Is there any technology you try to avoid?"
+    ]
+  },
+  {
+    "id": "ai-tools",
+    "prompt": "Have you tried any AI tools in your work or daily life?",
+    "followups": [
+      "What do you use them for?",
+      "Has anything about them surprised you?",
+      "What would you never trust an AI to do?"
+    ]
+  },
+  {
+    "id": "health-habits",
+    "prompt": "What do you do to stay healthy?",
+    "followups": [
+      "How often do you exercise?",
+      "What's one healthy habit you'd like to start?",
+      "Do you find it easy to keep good habits?"
+    ]
+  },
+  {
+    "id": "exercise",
+    "prompt": "What kind of exercise do you enjoy, if any?",
+    "followups": [
+      "Do you prefer exercising alone or with others?",
+      "How do you feel after a good workout?",
+      "What's the hardest part of staying active?"
+    ]
+  },
+  {
+    "id": "money",
+    "prompt": "What do you usually spend money on without thinking twice?",
+    "followups": [
+      "What was the last thing you bought that made you happy?",
+      "Do you compare prices before buying?",
+      "Do you prefer spending on things or on experiences?"
+    ]
+  },
+  {
+    "id": "saving",
+    "prompt": "Do you have any rules for saving money?",
+    "followups": [
+      "What are you saving for right now?",
+      "Do you keep a budget, or just check your account?",
+      "What's one purchase you regret?"
+    ]
+  },
+  {
+    "id": "time-management",
+    "prompt": "How do you usually plan your week?",
+    "followups": [
+      "Do you use a calendar or a to-do list?",
+      "When do you feel most productive?",
+      "What do you do when plans change at the last minute?"
+    ]
+  },
+  {
+    "id": "sleep",
+    "prompt": "How many hours of sleep do you usually get?",
+    "followups": [
+      "What do you do to relax before bed?",
+      "Do you feel different after a good night's sleep?",
+      "What's one thing that keeps you up at night?"
+    ]
+  }
+]
