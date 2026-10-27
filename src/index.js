@@ -35,7 +35,7 @@ const IMPORT_VERSION = (() => {
 })();
 
 async function loadLocalModules() {
-  const [logModule, micModule, ttsModule, loopModule, optionsModule, textModule, coachModule] = await Promise.all([
+  const [logModule, micModule, ttsModule, loopModule, optionsModule, textModule, coachModule, statsModule, lightRecapModule] = await Promise.all([
     import('./log.js' + IMPORT_VERSION),
     import('./mic.js' + IMPORT_VERSION),
     import('./tts.js' + IMPORT_VERSION),
@@ -43,6 +43,8 @@ async function loadLocalModules() {
     import('./core/options.js' + IMPORT_VERSION),
     import('./core/text.js' + IMPORT_VERSION),
     import('./coach.js' + IMPORT_VERSION),
+    import('./core/stats.js' + IMPORT_VERSION),
+    import('./core/light-recap.js' + IMPORT_VERSION),
   ]);
   return {
     createLog: logModule.createLog,
@@ -57,6 +59,8 @@ async function loadLocalModules() {
     ensureRecapDir: coachModule.ensureRecapDir,
     loadScenarios: coachModule.loadScenarios,
     resolvePracticeDir: coachModule.resolvePracticeDir,
+    createSessionStats: statsModule.createSessionStats,
+    writeLightRecap: lightRecapModule.writeLightRecap,
   };
 }
 
@@ -116,6 +120,8 @@ export async function apply(ctx, rawConfig) {
     ensureRecapDir,
     loadScenarios,
     resolvePracticeDir,
+    createSessionStats,
+    writeLightRecap,
   } = await loadLocalModules();
   const options = normalizeOptions(rawConfig);
   const logPath = resolveLogPath(options.practiceRoot, options.logFile);
@@ -223,6 +229,11 @@ export async function apply(ctx, rawConfig) {
     if (coachScope === '') {
       log.warn('coach prompt is not active; voice mode continues without it (see ' + logPath + ')');
     }
+    const sessionStats = createSessionStats({
+      sessionId,
+      scenarioId: scenario.id,
+      level: scenario.level,
+    });
     const mic = createMic({ subprocess: services.subprocess, config: options, log });
     const loop = new VoiceLoop({
       sessionId,
@@ -232,16 +243,34 @@ export async function apply(ctx, rawConfig) {
       mic,
       tts: speaker,
       stt: sttAdapter(),
+      stats: sessionStats,
       submit: (text) => submitTranscript(sessionId, text),
-      requestVoiceOff: () => voiceOff('voice-command', true),
+      requestVoiceOff: (reason) => voiceOff(typeof reason === 'string' && reason !== '' ? reason : 'voice-command', true),
       onFatal: (error) => {
         log.error('microphone fatal; leaving voice mode: ' + errorText(error));
-        Promise.resolve(voiceOff('mic-fatal', true)).catch((offError) => {
-          log.error('voice off after mic fatal failed: ' + errorText(offError));
-        });
+        // Speak a human explanation before the loop is torn down.
+        Promise.resolve()
+          .then(() => announceChinese('麦克风好像断开了，语音模式已关闭，练习记录会尽量保存。'))
+          .catch(() => {})
+          .then(() => voiceOff('mic-fatal', false))
+          .catch((offError) => {
+            log.error('voice off after mic fatal failed: ' + errorText(offError));
+          });
       },
     });
-    active = { sessionId, cwd, loop, mic, startedAt: Date.now(), scenarioId: scenario.id, coachScope, practiceDir };
+    active = {
+      sessionId,
+      cwd,
+      loop,
+      mic,
+      stats: sessionStats,
+      startedAt: Date.now(),
+      scenarioId: scenario.id,
+      scenarioTitle: typeof scenario.name === 'string' ? scenario.name : scenario.id,
+      level: typeof scenario.level === 'string' ? scenario.level : '',
+      coachScope,
+      practiceDir,
+    };
     try {
       await loop.start();
     } catch (error) {
@@ -254,11 +283,12 @@ export async function apply(ctx, rawConfig) {
       if (tail !== '') log.error('ffmpeg stderr tail: ' + tail);
       return {
         kind: 'error',
-        text: '/voice on failed: ' + errorText(error)
-          + (tail === '' ? '' : ' | ffmpeg: ' + summarizeText(tail, 200))
-          + ' (log: ' + logPath + ')',
+        text: '/voice on 启动失败：' + errorText(error)
+          + (tail === '' ? '' : '｜ffmpeg: ' + summarizeText(tail, 200))
+          + '（排查日志：' + logPath + '）',
       };
     }
+    startIdleWatch(active);
     try {
       services.speechToText.prepare('sensevoice-local');
       log.info('speech-to-text prepare requested (sensevoice-local)');
@@ -283,6 +313,7 @@ export async function apply(ctx, rawConfig) {
   async function voiceOff(reason, shouldAnnounce = true) {
     const current = active;
     active = null;
+    stopIdleWatch(current);
     // Remove the coach section before stopping the loop so the next model step
     // can never be assembled from a half-released prompt.
     await coach.release();
@@ -294,12 +325,127 @@ export async function apply(ctx, rawConfig) {
       }
       log.info('voice mode OFF (' + reason + ')');
     }
+    const recap = await maybeWriteLightRecap(current, reason);
     if (shouldAnnounce && speaker !== null) {
-      Promise.resolve(speaker.speak([{ lang: 'en', text: 'Voice mode is off.' }])).catch((error) => {
-        log.warn('off announcement failed: ' + errorText(error));
-      });
+      await announceChinese('语音模式已关闭。');
+      if (recap !== null && typeof recap.path === 'string' && recap.path !== '') {
+        await announceChinese('练习记录已保存到 practice 文件夹。');
+      }
     }
-    return { wasActive: current !== null };
+    return { wasActive: current !== null, recap };
+  }
+
+  /** Speak one short system message with the Chinese voice (never throws). */
+  async function announceChinese(text) {
+    if (speaker === null || typeof text !== 'string' || text === '') return;
+    try {
+      await speaker.speak([{ lang: 'zh', text }]);
+    } catch (error) {
+      log.warn('chinese announcement failed: ' + errorText(error));
+    }
+  }
+
+  const IDLE_REMIND_MS = 180000;
+  const IDLE_STOP_MS = 600000;
+
+  function stopIdleWatch(target) {
+    const current = target === undefined ? active : target;
+    if (current === null || current === undefined) return;
+    if (current.idleTimer !== undefined && current.idleTimer !== null) {
+      clearInterval(current.idleTimer);
+      current.idleTimer = null;
+    }
+  }
+
+  function startIdleWatch(current) {
+    stopIdleWatch(current);
+    current.idleReminded = false;
+    current.idleTimer = setInterval(() => {
+      void checkIdle(current);
+    }, 15000);
+    if (typeof current.idleTimer.unref === 'function') current.idleTimer.unref();
+  }
+
+  async function checkIdle(current) {
+    if (active !== current) {
+      stopIdleWatch(current);
+      return;
+    }
+    let last = 0;
+    try {
+      const status = typeof current.loop.status === 'function' ? current.loop.status() : null;
+      if (status !== null && status !== undefined && Number.isFinite(Number(status.lastActivityAt))) {
+        last = Number(status.lastActivityAt);
+      }
+    } catch (error) {
+      log.warn('idle status read failed: ' + errorText(error));
+    }
+    if (last === 0) last = current.startedAt;
+    const idleMs = Date.now() - last;
+    if (idleMs >= IDLE_STOP_MS) {
+      log.info('idle timeout reached; closing voice mode');
+      await voiceOff('idle', true);
+      return;
+    }
+    if (idleMs >= IDLE_REMIND_MS && current.idleReminded !== true) {
+      current.idleReminded = true;
+      await announceChinese('还在吗？我们可以继续，或者说 end session 结束练习。');
+      return;
+    }
+    if (idleMs < IDLE_REMIND_MS) current.idleReminded = false;
+  }
+
+  /**
+   * Write the deterministic light recap after a session. The model-written recap
+   * (from "end session") wins: writeLightRecap skips when it already exists.
+   * Never throws; returns { path, skipped, reason }.
+   */
+  async function maybeWriteLightRecap(current, reason) {
+    if (current === null || current === undefined) return { path: '', skipped: true, reason: 'no-session' };
+    if (reason === 'restart') return { path: '', skipped: true, reason: 'restart' };
+    const stats = current.stats;
+    if (stats === null || stats === undefined || typeof stats.snapshot !== 'function') {
+      return { path: '', skipped: true, reason: 'no-stats' };
+    }
+    let snapshot = null;
+    try {
+      snapshot = stats.snapshot();
+    } catch (error) {
+      log.warn('session stats snapshot failed: ' + errorText(error));
+      return { path: '', skipped: true, reason: 'snapshot-failed' };
+    }
+    if (snapshot === null || typeof snapshot !== 'object' || Number(snapshot.userUtterances) === 0) {
+      log.info('light recap skipped: no user utterances');
+      return { path: '', skipped: true, reason: 'no-utterances' };
+    }
+    // Very short sessions (mic test, hot-reload during dev) are not worth a file.
+    if (Number.isFinite(Number(snapshot.durationMs)) && Number(snapshot.durationMs) < 60000) {
+      log.info('light recap skipped: session shorter than 60s');
+      return { path: '', skipped: true, reason: 'short-session' };
+    }
+    try {
+      const result = await writeLightRecap({
+        practiceDir: current.practiceDir,
+        stats: snapshot,
+        scenario: {
+          id: current.scenarioId,
+          name: current.scenarioTitle,
+          nameZh: '',
+        },
+        level: current.level,
+        log,
+        now: new Date(),
+      });
+      if (result !== null && typeof result === 'object' && result.skipped === true) {
+        log.info('light recap skipped: ' + String(result.reason));
+      } else if (result !== null && typeof result === 'object') {
+        log.info('light recap written: ' + String(result.path));
+      }
+      return result;
+    } catch (error) {
+      log.warn('light recap failed: ' + errorText(error));
+      return { path: '', skipped: true, reason: 'error' };
+    }
   }
 
   /** One /voice status line describing the coach prompt injection. */
@@ -434,8 +580,8 @@ export async function apply(ctx, rawConfig) {
         return {
           kind: 'success',
           text: result.wasActive
-            ? 'Voice mode OFF. Microphone and speech released.'
-            : 'Voice mode is already off.',
+            ? '语音模式已关闭，麦克风与朗读已释放。'
+            : '语音模式当前已经是关闭状态。',
         };
       }
       return {
@@ -466,6 +612,20 @@ export async function apply(ctx, rawConfig) {
     log.warn('ctx.commands is unavailable: the /voice command was not registered');
   }
 
+  ctx.on('agent/assistant-stream', ({ agent, frame }) => {
+    try {
+      const current = active;
+      if (current === null) return;
+      const streamSessionId = agent !== null && agent !== undefined && agent.session !== undefined
+        ? agent.session.id
+        : '';
+      if (streamSessionId !== current.sessionId) return;
+      if (typeof current.loop.onStreamFrame === 'function') current.loop.onStreamFrame(frame);
+    } catch (error) {
+      log.warn('assistant stream handling failed: ' + errorText(error));
+    }
+  }, { global: true });
+
   ctx.on('session/event', (session, event) => {
     try {
       const current = active;
@@ -480,6 +640,7 @@ export async function apply(ctx, rawConfig) {
   ctx.effect(() => async () => {
     const current = active;
     active = null;
+    stopIdleWatch(current);
     // Hot reload / uninstall must not leave an agent-scoped coach section
     // behind: release it even if the agent itself outlives this plugin mount.
     try {
@@ -493,6 +654,7 @@ export async function apply(ctx, rawConfig) {
       } catch (error) {
         log.warn('loop stop during dispose failed: ' + errorText(error));
       }
+      await maybeWriteLightRecap(current, 'dispose');
     }
     if (speaker !== null) {
       try {

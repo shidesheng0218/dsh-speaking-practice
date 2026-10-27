@@ -26,6 +26,11 @@ export class ReplyTracker {
     return this._active === null ? null : this._active.turn;
   }
 
+  /** The turn the loop currently expects (null until the reply turn starts). */
+  get activeTurn() {
+    return this._active === null ? null : this._active.turn;
+  }
+
   get submittedText() {
     return this._active === null ? '' : this._active.submittedText;
   }

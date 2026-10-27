@@ -19,6 +19,10 @@ import {
   summarizeText,
 } from './text.js';
 import { ReplyTracker } from './reply.js';
+import { createStreamSpeaker } from './stream-speech.js';
+
+/** Spoken when transcription keeps failing: guide the user instead of silent retries. */
+const TRANSCRIBE_FAILURE_MESSAGE = '我这边一直没听清你的声音，先暂停语音模式。检查一下麦克风，然后再输入 /voice on 重试。';
 
 const NOOP_LOGGER = Object.freeze({
   debug() {},
@@ -59,6 +63,7 @@ export class VoiceLoop {
     this.mic = deps.mic;
     this.stt = deps.stt;
     this.tts = deps.tts;
+    this.stats = deps.stats !== null && typeof deps.stats === 'object' ? deps.stats : null;
     this.submit = deps.submit;
     this.requestVoiceOff = pick(deps.requestVoiceOff, async () => {});
     this.onFatal = pick(deps.onFatal, () => {});
@@ -100,6 +105,12 @@ export class VoiceLoop {
     this._lastError = '';
     this._sorrySaid = false;
     this._startedAt = null;
+    this._lastActivityAt = null;
+    this._consecutiveFailures = 0;
+    this._streamSpeaker = null;
+    this._streamTurn = null;
+    this._streamAttempt = null;
+    this._streamSeenText = '';
     this._unsubState = this.sm.onChange((entry) => this._logTransition(entry));
   }
 
@@ -123,6 +134,9 @@ export class VoiceLoop {
       lastError: this._lastError,
       replyActive: this.reply.active,
       replyTurn: this.reply.turn,
+      lastActivityAt: this._lastActivityAt,
+      consecutiveFailures: this._consecutiveFailures,
+      speaking: this._isSpeaking(),
       lastReplySegments: this._lastReplySegments.length,
       vad: this._vad === null ? null : this._vad.getStats(),
     };
@@ -195,6 +209,18 @@ export class VoiceLoop {
     }
     this._startedAt = Date.now();
     this._micRunning = true;
+    this._lastActivityAt = Date.now();
+    this._consecutiveFailures = 0;
+    this._sorrySaid = false;
+    this._resetStreamTracking();
+    this._streamSpeaker = createStreamSpeaker({
+      tts: this.tts,
+      log: this.log,
+      maxSentenceChars: this.maxSentenceChars,
+      languageThreshold: this.languageThreshold,
+      minSegmentChars: pick(this.config.minSegmentChars, 8),
+      onBeforeSpeak: () => this._onBeforeStreamSpeak(),
+    });
     this.sm.transition('listening', { reason: 'start' });
     this.log.info('[voice] listening session=' + this.sessionId);
     return this;
@@ -209,6 +235,7 @@ export class VoiceLoop {
     this._micRunning = false;
     this._clearReplyTimer();
     this.reply.reset();
+    this._resetStreamTracking();
     if (this._sttController !== null) {
       try {
         this._sttController.abort(new Error('voice loop stopped'));
@@ -222,10 +249,28 @@ export class VoiceLoop {
     } catch (error) {
       this.log.warn('[voice] mic stop failed: ' + errorMessage(error));
     }
-    try {
-      await this.tts.cancel();
-    } catch (error) {
-      this.log.warn('[voice] tts cancel failed: ' + errorMessage(error));
+    const streamSpeaker = this._streamSpeaker;
+    this._streamSpeaker = null;
+    let ttsCancelled = false;
+    if (streamSpeaker !== null) {
+      try {
+        await streamSpeaker.cancel();
+        ttsCancelled = true;
+      } catch (error) {
+        this.log.warn('[voice] stream speech cancel failed: ' + errorMessage(error));
+      }
+      try {
+        streamSpeaker.dispose();
+      } catch (_disposeError) {
+        // The queue is already invalidated by cancel(); dispose is a no-op here.
+      }
+    }
+    if (!ttsCancelled) {
+      try {
+        await this.tts.cancel();
+      } catch (error) {
+        this.log.warn('[voice] tts cancel failed: ' + errorMessage(error));
+      }
     }
     this._vad = null;
     this.sm.transition('idle', { force: true, reason });
@@ -250,6 +295,11 @@ export class VoiceLoop {
         }
       }
     }
+  }
+
+  /** Speak one short Chinese system message (idle reminders / error recovery). */
+  async announceChinese(text) {
+    return this.announce(text, 'zh');
   }
 
   /** Feed one raw PCM16 chunk from the microphone. */
@@ -283,6 +333,8 @@ export class VoiceLoop {
         this._onSpeechStart(event);
         return;
       case 'utterance':
+        this._touch();
+        this._stat('onSpeech', Number.isFinite(event.durationMs) ? event.durationMs : 0);
         if (this.sm.state === 'capturing' || this.sm.state === 'listening') {
           this._track(this._onUtterance(event));
         } else {
@@ -300,6 +352,7 @@ export class VoiceLoop {
   }
 
   _onSpeechStart(event) {
+    this._touch();
     if (this.sm.state === 'listening') {
       this.sm.transition('capturing', { reason: 'speech-start' });
       this.log.info('[voice] speech onset t=' + (event.timeMs / 1000).toFixed(2) + 's');
@@ -307,15 +360,14 @@ export class VoiceLoop {
     }
     if (this.sm.state === 'speaking' && this.config.bargeIn !== false) {
       this.log.info('[voice] barge-in: cancelling speech');
-      Promise.resolve(this.tts.cancel()).catch((error) => {
-        this.log.warn('[voice] barge-in cancel failed: ' + errorMessage(error));
-      });
+      this._cancelSpeech('barge-in');
       this.sm.transition('capturing', { reason: 'barge-in' });
     }
   }
 
   async _onUtterance(event) {
     const generation = this._generation;
+    this._touch();
     if (this.sm.state === 'capturing') {
       this.sm.transition('transcribing', {
         reason: 'utterance',
@@ -341,6 +393,7 @@ export class VoiceLoop {
         ? result.text.trim()
         : '';
       this._lastTranscript = text;
+      this._consecutiveFailures = 0;
       if (text === '') {
         this.log.info('[voice] empty transcript, listening again');
         this._listening('empty-transcript');
@@ -371,18 +424,48 @@ export class VoiceLoop {
     const detail = timedOut ? 'transcription timed out' : errorMessage(error);
     this._lastError = detail;
     this.log.warn('[voice] transcription failed: ' + detail);
+    this._statError('transcribe');
+    this._touch();
+    this._consecutiveFailures += 1;
+    if (this._consecutiveFailures >= 3) {
+      this.log.warn('[voice] ' + this._consecutiveFailures
+        + ' consecutive transcription failures; explaining in Chinese and leaving voice mode');
+      this._listening('transcribe-failed');
+      this._track(this._sayTranscribeFailure());
+      return;
+    }
     this._saySorry();
     this._listening('transcribe-error');
   }
 
+  /**
+   * Third consecutive failure: say what went wrong in Chinese, then ask the host
+   * to leave voice mode so the user can fix the microphone.
+   */
+  async _sayTranscribeFailure() {
+    const generation = this._generation;
+    await this.announce(TRANSCRIBE_FAILURE_MESSAGE, 'zh');
+    if (this._stopped || generation !== this._generation) return;
+    try {
+      await this.requestVoiceOff('transcribe-failed');
+    } catch (error) {
+      this.log.warn('[voice] voice off after transcribe failures failed: ' + errorMessage(error));
+    }
+  }
+
   async _submitText(text, generation) {
+    this._touch();
+    this._resetStreamTracking();
+    if (this._streamSpeaker !== null) this._streamSpeaker.reset();
     this.reply.begin(text);
     try {
       await this.submit(text, { sessionId: this.sessionId });
+      this._stat('onUserText', text);
     } catch (error) {
       this.reply.reset();
       this._lastError = errorMessage(error);
       this.log.error('[voice] submit failed: ' + errorMessage(error));
+      this._statError('submit');
       this._saySorry();
       this._listening('submit-failed');
       return;
@@ -402,6 +485,7 @@ export class VoiceLoop {
     const type = event.type;
     const data = event.data !== null && typeof event.data === 'object' ? event.data : {};
     if (type === 'turn/start') {
+      this._touch();
       if (this.reply.onTurnStart(data.turn)) {
         this._clearReplyTimer();
         this.log.info('[voice] reply turn ' + data.turn + ' started');
@@ -411,12 +495,15 @@ export class VoiceLoop {
     if (type === 'assistant/message') {
       const text = extractMessageText(data.message);
       if (text === '') return;
+      this._touch();
+      this._stat('onAssistantText', text);
       if (this.reply.onAssistantText(data.turn, text)) {
         this.log.info('[voice] assistant text in turn ' + data.turn + ' (+' + text.length + ' chars)');
       }
       return;
     }
     if (type === 'turn/end') {
+      this._touch();
       const reasonKind = data.reason !== null && typeof data.reason === 'object' ? data.reason.kind : undefined;
       const result = this.reply.onTurnEnd(data.turn, reasonKind);
       if (result === null) return;
@@ -427,14 +514,46 @@ export class VoiceLoop {
 
   async _handleReply(result) {
     const reasonKind = result.reasonKind;
+    const streamedText = this._streamSeenText;
+    const hasStreamed = typeof streamedText === 'string' && streamedText.trim() !== '';
     this.log.info('[voice] reply turn ' + result.turn + ' ended (' + String(reasonKind) + ', '
-      + result.text.length + ' chars)');
+      + result.text.length + ' chars' + (hasStreamed ? ', streamed ' + streamedText.length + ' chars' : '') + ')');
     if (reasonKind !== 'completed') {
       this._lastError = 'turn ended with ' + String(reasonKind);
       this.log.warn('[voice] not speaking: turn ended with ' + String(reasonKind));
+      if (hasStreamed) await this._cancelStreamSpeech('turn-not-completed');
+      this._resetStreamTracking();
       this._listening('turn-not-completed');
       return;
     }
+    if (hasStreamed && this._streamSpeaker !== null) {
+      // Streamed playback already spoke (most of) this turn: flush the tail and
+      // never replay the accumulated whole-reply text.
+      const cached = prepareSpeechText(result.text, {
+        maxChars: this.maxSpeechChars,
+        maxSentenceChars: this.maxSentenceChars,
+        threshold: this.languageThreshold,
+      });
+      if (cached.segments.length > 0) this._lastReplySegments = cached.segments;
+      this.log.info('[voice] flushing streamed reply speech');
+      try {
+        await this._streamSpeaker.flush();
+      } catch (error) {
+        this.log.warn('[voice] stream flush failed: ' + errorMessage(error));
+      }
+      this._resetStreamTracking();
+      if (this._stopped) return;
+      if (this.sm.state === 'speaking') {
+        if (this._vad !== null) this._vad.suppress(this.ttsTailGuardMs);
+        this._listening('tts-done:stream');
+      } else if (this.sm.state === 'awaiting-reply' || this.sm.state === 'transcribing') {
+        this._listening('stream-empty');
+      } else {
+        this.log.info('[voice] stream speech finished while state=' + this.sm.state);
+      }
+      return;
+    }
+    this._resetStreamTracking();
     const prepared = prepareSpeechText(result.text, {
       maxChars: this.maxSpeechChars,
       maxSentenceChars: this.maxSentenceChars,
@@ -451,6 +570,130 @@ export class VoiceLoop {
     await this._speak(prepared.segments, 'reply');
   }
 
+  /**
+   * Forward one host assistant-stream frame. Frames are accepted only for the
+   * reply turn the loop is currently waiting for, and only while waiting for or
+   * speaking that reply. The real host puts turn/step only on the start frame,
+   * so later chunk/end frames are matched through the tracked attempt.
+   * @param {{type:'start'|'chunk'|'end', attemptId?:string, turn?:number, step?:number, chunk?:object}} frame
+   */
+  onStreamFrame(frame) {
+    if (this._stopped || frame === null || typeof frame !== 'object') return;
+    const speaker = this._streamSpeaker;
+    if (speaker === null) return;
+    const type = frame.type;
+    if (type !== 'start' && type !== 'chunk' && type !== 'end') return;
+    if (this.sm.state !== 'awaiting-reply' && this.sm.state !== 'speaking') return;
+    if (!this.reply.active) return;
+    const expectedTurn = this.reply.activeTurn;
+    const explicitTurn = Number.isFinite(frame.turn) ? frame.turn : null;
+    if (type === 'start') {
+      if (explicitTurn === null || expectedTurn === null || explicitTurn !== expectedTurn) {
+        this.log.debug('[voice] assistant stream start ignored (turn=' + String(explicitTurn)
+          + ', expected=' + String(expectedTurn) + ')');
+        return;
+      }
+      if (this._streamTurn !== explicitTurn) {
+        this._streamTurn = explicitTurn;
+        this._streamSeenText = '';
+      }
+      this._streamAttempt = {
+        attemptId: frame.attemptId === undefined || frame.attemptId === null ? null : frame.attemptId,
+        turn: explicitTurn,
+      };
+      speaker.reset();
+      this.log.info('[voice] assistant stream started (turn=' + explicitTurn
+        + ', step=' + String(frame.step) + ')');
+      return;
+    }
+    if (this._streamAttempt === null) return;
+    if (explicitTurn !== null && explicitTurn !== this._streamAttempt.turn) return;
+    if (frame.attemptId !== undefined && frame.attemptId !== null
+      && this._streamAttempt.attemptId !== null && frame.attemptId !== this._streamAttempt.attemptId) {
+      return;
+    }
+    if (type === 'end') return;
+    const chunk = frame.chunk;
+    if (chunk === null || typeof chunk !== 'object') return;
+    if (chunk.type !== 'text-delta' || typeof chunk.text !== 'string' || chunk.text === '') return;
+    if (this._streamTurn === null || (expectedTurn !== null && this._streamTurn !== expectedTurn)) return;
+    this._streamSeenText += chunk.text;
+    this._touch();
+    speaker.pushText(chunk.text);
+  }
+
+  /** Called by the stream speaker right before each queued segment starts. */
+  _onBeforeStreamSpeak() {
+    if (this._stopped) return;
+    this._touch();
+    const state = this.sm.state;
+    if (state !== 'speaking' && state !== 'awaiting-reply' && state !== 'transcribing') {
+      this.log.info('[voice] suppressing streamed speech in state ' + state);
+      this._cancelSpeech('state-guard');
+      return;
+    }
+    if (this._vad !== null) this._vad.suppress(this.ttsOnsetGuardMs);
+    if (state !== 'speaking' && this.sm.can('speaking')) {
+      this.sm.transition('speaking', { kind: 'stream' });
+      this.log.info('[voice] streaming speech started');
+    }
+  }
+
+  /** Cancel playback without awaiting (barge-in must be prompt). */
+  _cancelSpeech(reason) {
+    const speaker = this._streamSpeaker;
+    let cancellation;
+    try {
+      cancellation = speaker === null ? this.tts.cancel() : speaker.cancel();
+    } catch (error) {
+      this.log.warn('[voice] ' + reason + ' cancel failed: ' + errorMessage(error));
+      return;
+    }
+    Promise.resolve(cancellation).catch((error) => {
+      this.log.warn('[voice] ' + reason + ' cancel failed: ' + errorMessage(error));
+    });
+  }
+
+  async _cancelStreamSpeech(reason) {
+    const speaker = this._streamSpeaker;
+    if (speaker === null) return;
+    try {
+      await speaker.cancel();
+    } catch (error) {
+      this.log.warn('[voice] ' + reason + ' stream cancel failed: ' + errorMessage(error));
+    }
+  }
+
+  _resetStreamTracking() {
+    this._streamTurn = null;
+    this._streamAttempt = null;
+    this._streamSeenText = '';
+  }
+
+  _isSpeaking() {
+    if (this.sm.state === 'speaking') return true;
+    if (this._streamSpeaker !== null && this._streamSpeaker.speaking === true) return true;
+    return this.tts !== null && this.tts.speaking === true;
+  }
+
+  _touch() {
+    this._lastActivityAt = Date.now();
+  }
+
+  _stat(method, ...args) {
+    const stats = this.stats;
+    if (stats === null) return;
+    try {
+      if (typeof stats[method] === 'function') stats[method](...args);
+    } catch (error) {
+      this.log.warn('[voice] stats.' + method + ' failed: ' + errorMessage(error));
+    }
+  }
+
+  _statError(kind) {
+    this._stat('onError', kind);
+  }
+
   async _repeat() {
     if (this._lastReplySegments.length === 0) {
       this.log.info('[voice] repeat requested but no cached reply');
@@ -463,6 +706,7 @@ export class VoiceLoop {
 
   async _speak(segments, kind) {
     if (this._stopped || segments.length === 0) return;
+    this._touch();
     const generation = this._generation;
     if (!this.sm.can('speaking')) {
       this.log.warn('[voice] cannot speak from state ' + this.sm.state);
@@ -475,6 +719,7 @@ export class VoiceLoop {
     } catch (error) {
       this._lastError = errorMessage(error);
       this.log.error('[voice] tts failed: ' + errorMessage(error));
+      this._statError('tts');
     }
     if (!this._isCurrent(generation)) return;
     if (this.sm.state === 'speaking') {
