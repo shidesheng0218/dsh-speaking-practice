@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { VoiceLoop } from '../src/core/loop.js';
-import { deferred, silentLog, sleep, tonePcm, waitUntil } from './support.mjs';
+import { deferred, silencePcm, silentLog, sleep, tonePcm, waitUntil } from './support.mjs';
 
 function makeHarness(options = {}) {
   const calls = { submit: [], speak: [], cancel: 0, off: 0, offReasons: [], micStops: 0 };
@@ -580,3 +580,174 @@ test('throwing stats hooks never break the loop', async () => {
   assert.deepEqual(harness.calls.submit, ['hello there']);
   assert.equal(harness.loop.state, 'awaiting-reply');
 });
+
+
+// --- v0.4 client overlay: interruptSpeech / level / captions ---------------
+
+test('interruptSpeech in listening only cancels audio and stays listening', async () => {
+  const harness = makeHarness();
+  const { loop, calls } = harness;
+  await loop.start();
+  const before = calls.cancel;
+  assert.equal(await loop.interruptSpeech('stop-button'), true);
+  assert.equal(loop.state, 'listening');
+  assert.ok(calls.cancel > before, 'tts.cancel is invoked even with nothing speaking');
+  assert.equal(await loop.interruptSpeech('stop-button-again'), true);
+  assert.equal(loop.state, 'listening');
+
+  const idle = makeHarness();
+  assert.equal(await idle.loop.interruptSpeech(), true);
+  assert.equal(idle.loop.state, 'idle');
+});
+
+test('interruptSpeech while speaking stops playback and returns to listening', async () => {
+  const gate = deferred();
+  const harness = makeHarness({ ttsGate: gate });
+  const { loop, calls } = harness;
+  await loop.start();
+  await driveUtterance(harness);
+  loop.onSessionEvent({ type: 'turn/start', data: { turn: 2 } });
+  loop.onStreamFrame(streamStart(2));
+  loop.onStreamFrame(streamChunk('A long streamed answer.'));
+  assert.equal(loop.state, 'speaking');
+  const before = calls.cancel;
+
+  assert.equal(await loop.interruptSpeech('stop-button'), true);
+  assert.equal(loop.state, 'listening');
+  assert.ok(calls.cancel > before);
+  gate.resolve();
+  await loop.settled();
+  assert.equal(loop.state, 'listening');
+
+  // The remainder of the stopped turn must not resume playback.
+  loop.onStreamFrame(streamChunk('Tail that must stay quiet.'));
+  endTurn(harness, 2, 'A long streamed answer. Tail that must stay quiet.');
+  await loop.settled();
+  assert.equal(loop.state, 'listening');
+  assert.equal(calls.speak.length, 1, 'no replay or resume after the client stop');
+});
+
+test('interruptSpeech while awaiting-reply suppresses playback but keeps repeat cache', async () => {
+  const harness = makeHarness();
+  const { loop, calls } = harness;
+  await loop.start();
+  await driveUtterance(harness);
+  assert.equal(loop.state, 'awaiting-reply');
+  const before = calls.cancel;
+
+  assert.equal(await loop.interruptSpeech('stop-button'), true);
+  assert.equal(loop.state, 'awaiting-reply', 'the loop keeps waiting for the reply turn');
+  assert.ok(calls.cancel > before);
+  assert.equal(await loop.interruptSpeech('stop-button-again'), true);
+  assert.equal(loop.state, 'awaiting-reply');
+
+  // Streaming after the stop must not reach the speaker.
+  loop.onSessionEvent({ type: 'turn/start', data: { turn: 5 } });
+  loop.onStreamFrame(streamStart(5));
+  loop.onStreamFrame(streamChunk('Do not speak this.'));
+  assert.equal(calls.speak.length, 0);
+  endTurn(harness, 5, 'Do not speak this.');
+  await loop.settled();
+  assert.equal(calls.speak.length, 0, 'the stopped reply is never spoken');
+  assert.equal(loop.state, 'listening');
+  assert.equal(loop.status().assistantText, 'Do not speak this.');
+
+  // "repeat that" still replays the suppressed reply from the cache.
+  const original = harness.stt.transcribe;
+  harness.stt.transcribe = async () => ({ text: 'Say that again!' });
+  await driveUtterance(harness);
+  await loop.waitForState('listening');
+  assert.equal(calls.speak.length, 1);
+  assert.match(spokenTexts(calls)[0], /Do not speak this/);
+  harness.stt.transcribe = original;
+});
+
+test('interruptSpeech never throws when cancel itself fails', async () => {
+  const harness = makeHarness();
+  const { loop } = harness;
+  await loop.start();
+  harness.tts.cancel = () => {
+    throw new Error('cancel exploded');
+  };
+  assert.equal(await loop.interruptSpeech('broken-cancel'), true);
+  assert.equal(loop.state, 'listening');
+});
+
+test('status().lastLevelDb follows the latest 20 ms mic frame', async () => {
+  const harness = makeHarness();
+  const { loop } = harness;
+  await loop.start();
+  assert.equal(loop.status().lastLevelDb, -120);
+
+  loop.handleAudio(tonePcm(20, 0.1));
+  const loud = loop.status().lastLevelDb;
+  assert.ok(Math.abs(loud + 20) < 0.5, 'tone frame is about -20 dBFS, got ' + loud);
+
+  loop.handleAudio(silencePcm(20));
+  assert.equal(loop.status().lastLevelDb, -120);
+
+  loop.handleAudio(tonePcm(10, 0.1));
+  assert.equal(loop.status().lastLevelDb, -120, 'a partial frame does not update the level');
+  loop.handleAudio(tonePcm(10, 0.1));
+  assert.ok(Math.abs(loop.status().lastLevelDb + 20) < 0.5, 'two half frames complete one 20 ms frame');
+});
+
+test('status().assistantText accumulates stream text, converges on message, keeps after turn/end', async () => {
+  const harness = makeHarness();
+  const { loop } = harness;
+  await loop.start();
+  await driveUtterance(harness);
+  loop.onSessionEvent({ type: 'turn/start', data: { turn: 4 } });
+  assert.equal(loop.status().assistantText, '');
+
+  loop.onStreamFrame(streamStart(4));
+  loop.onStreamFrame(streamChunk('Hello '));
+  assert.equal(loop.status().assistantText, 'Hello ');
+  loop.onStreamFrame(streamChunk('there.'));
+  assert.equal(loop.status().assistantText, 'Hello there.');
+
+  endTurn(harness, 4, 'Hello there.');
+  await loop.settled();
+  assert.equal(loop.status().assistantText, 'Hello there.', 'message converges instead of duplicating stream text');
+  assert.equal(loop.state, 'listening');
+
+  // Non-streamed turns fill the caption from assistant/message directly.
+  await driveReply(harness, 6, 'Second reply.');
+  assert.equal(loop.status().assistantText, 'Second reply.');
+
+  loop.onSessionEvent({ type: 'turn/start', data: { turn: 7 } });
+  assert.equal(loop.status().assistantText, '', 'the next turn clears the caption');
+
+  await loop.stop('test');
+  assert.equal(loop.status().assistantText, '');
+  assert.equal(loop.status().lastLevelDb, -120);
+});
+
+
+test('interrupt during fallback playback does not suppress the next reply', async () => {
+  const gate = deferred();
+  const harness = makeHarness({ ttsGate: gate });
+  const { loop, calls } = harness;
+  await loop.start();
+  await driveUtterance(harness);
+
+  // No stream: the turn ends first, then the whole-reply fallback starts speaking.
+  loop.onSessionEvent({ type: 'turn/start', data: { turn: 3 } });
+  endTurn(harness, 3, 'Fallback answer.');
+  await loop.waitForState('speaking');
+  await loop.interruptSpeech('stop-button');
+  assert.equal(loop.state, 'listening');
+  gate.resolve();
+  await loop.settled();
+  assert.equal(calls.speak.length, 1);
+
+  // The suppression flag from the stopped turn must not leak into the next turn.
+  await driveUtterance(harness);
+  loop.onSessionEvent({ type: 'turn/start', data: { turn: 9 } });
+  endTurn(harness, 9, 'Next reply should speak.');
+  await loop.waitForState('listening');
+  assert.equal(calls.speak.length, 2, 'the next reply is spoken normally');
+  assert.match(spokenTexts(calls)[1], /Next reply should speak/);
+});
+
+

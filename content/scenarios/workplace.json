@@ -1,0 +1,59 @@
+{
+  "id": "workplace",
+  "name": "English at Work",
+  "nameZh": "职场英语",
+  "level": "B1-B2",
+  "durationMinutes": 12,
+  "goal": "用 3 句完成 standup 汇报、口述一封 60 词邮件，并在会议里礼貌澄清或反对一次。",
+  "roles": {
+    "coach": "学习者的同事兼直属经理，语气友好直接，会追问负责人和截止时间。",
+    "learner": "团队同事，每天用英文同步进度。"
+  },
+  "opening": "Morning! Quick sync before the standup — what did you get done yesterday, and what's the plan for today?",
+  "beats": [
+    {
+      "id": "standup",
+      "intent": "用 3 句说清昨天做了什么、今天做什么、卡在哪里。",
+      "coachMove": "按 yesterday / today / blockers 顺序追问，缺一项就点名补上。"
+    },
+    {
+      "id": "email-dictation",
+      "intent": "口头说一封 60 词邮件：目的、2 个要点、下一步。",
+      "coachMove": "先问收件人和目的，再让学习者一口气说完，最后追问截止时间。"
+    },
+    {
+      "id": "meeting",
+      "intent": "在会议里礼貌插话、澄清或表达不同意见，并给出理由。",
+      "coachMove": "扮演同事提一个方案，请学习者用 'Could I jump in?' 或 'I see your point, but...' 回应。"
+    },
+    {
+      "id": "action-items",
+      "intent": "复述会议决定：谁、做什么、什么时候完成。",
+      "coachMove": "问 'So who's doing what by when?'，答完只纠正一个介词或时态错误。"
+    }
+  ],
+  "usefulPhrases": [
+    "Yesterday I worked on ...",
+    "Today I'm planning to ...",
+    "I'm blocked on ... because ...",
+    "Just a quick update on ...",
+    "I'm writing to ...",
+    "Could I jump in here?",
+    "I see your point, but ...",
+    "Let me confirm — so we're doing ... by Friday?"
+  ],
+  "successCriteria": [
+    "standup 三句覆盖昨天、今天、阻碍，全程英文。",
+    "邮件口述包含目的、2 个要点和明确截止时间。",
+    "会议中用一次礼貌插话或不同意见句式。",
+    "复述至少 2 个 action item（谁、做什么、何时）。",
+    "句子短、语速稳，少用 um 拖时间。"
+  ],
+  "wrapUp": "Nice sync. Before we stop, what's one sentence you'll say differently in tomorrow's standup?",
+  "recapFocus": [
+    "一般过去时与现在完成时是否分清。",
+    "介词搭配：work on、blocked on、by Friday。",
+    "会议插话是否礼貌且简短。",
+    "数字、时间与截止日期表达是否清楚。"
+  ]
+}

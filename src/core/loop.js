@@ -10,7 +10,7 @@
  * with fake mic/stt/tts/submit dependencies in node:test.
  */
 import { VoiceStateMachine } from './state.js';
-import { EnergyVad } from './vad.js';
+import { EnergyVad, rmsDbFromPcm16 } from './vad.js';
 import { buildWav } from './wav.js';
 import {
   extractMessageText,
@@ -30,6 +30,10 @@ const NOOP_LOGGER = Object.freeze({
   warn() {},
   error() {},
 });
+
+/** Quietest level reported for digital silence, matching core/vad.js. */
+const MIN_LEVEL_DB = -120;
+const EMPTY_BUFFER = Buffer.alloc(0);
 
 function pick(value, fallback) {
   return value === undefined || value === null ? fallback : value;
@@ -111,6 +115,16 @@ export class VoiceLoop {
     this._streamTurn = null;
     this._streamAttempt = null;
     this._streamSeenText = '';
+    this._assistantTurn = null;
+    this._assistantCommitted = '';
+    this._assistantStream = '';
+    this._suppressSpeakUntilTurnEnd = false;
+    this._lastLevelDb = MIN_LEVEL_DB;
+    this._levelLeftover = EMPTY_BUFFER;
+    this._levelFrameBytes = Math.max(
+      2,
+      Math.round((this.vadOptions.sampleRate * this.vadOptions.frameMs) / 1000) * 2,
+    );
     this._unsubState = this.sm.onChange((entry) => this._logTransition(entry));
   }
 
@@ -131,6 +145,8 @@ export class VoiceLoop {
       startedAt: this._startedAt,
       micRunning: this._micRunning,
       lastTranscript: this._lastTranscript,
+      lastLevelDb: this._lastLevelDb,
+      assistantText: this._assistantTextValue(),
       lastError: this._lastError,
       replyActive: this.reply.active,
       replyTurn: this.reply.turn,
@@ -212,6 +228,9 @@ export class VoiceLoop {
     this._lastActivityAt = Date.now();
     this._consecutiveFailures = 0;
     this._sorrySaid = false;
+    this._suppressSpeakUntilTurnEnd = false;
+    this._resetAssistantText(null);
+    this._resetLevel();
     this._resetStreamTracking();
     this._streamSpeaker = createStreamSpeaker({
       tts: this.tts,
@@ -235,6 +254,9 @@ export class VoiceLoop {
     this._micRunning = false;
     this._clearReplyTimer();
     this.reply.reset();
+    this._suppressSpeakUntilTurnEnd = false;
+    this._resetAssistantText(null);
+    this._resetLevel();
     this._resetStreamTracking();
     if (this._sttController !== null) {
       try {
@@ -302,8 +324,51 @@ export class VoiceLoop {
     return this.announce(text, 'zh');
   }
 
+  /**
+   * Client Stop button: cancel any in-flight spoken reply.
+   *
+   * - speaking: stop playback immediately and return to listening.
+   * - awaiting-reply: mark the pending turn so its reply is not spoken when the
+   *   turn ends; the full assistant text is still cached for "repeat that".
+   * - other states: cancel any announcement and stay put.
+   *
+   * Idempotent and repeatable; never throws.
+   * @param {string} [reason] diagnostic reason for the log.
+   * @returns {Promise<boolean>} true when the request was handled.
+   */
+  async interruptSpeech(reason = 'client') {
+    try {
+      const state = this.sm.state;
+      if (state === 'speaking' || state === 'awaiting-reply') {
+        this._suppressSpeakUntilTurnEnd = true;
+      }
+      if (state === 'speaking') this._listening('client-interrupt');
+      this._touch();
+      this.log.info('[voice] client interrupt (state=' + state + ', reason=' + String(reason) + ')');
+      const cancellations = [];
+      const cancelSafely = (label, operation) => {
+        try {
+          cancellations.push(Promise.resolve(operation()).catch((error) => {
+            this.log.warn('[voice] ' + label + ' cancel failed: ' + errorMessage(error));
+          }));
+        } catch (error) {
+          this.log.warn('[voice] ' + label + ' cancel failed: ' + errorMessage(error));
+        }
+      };
+      const speaker = this._streamSpeaker;
+      if (speaker !== null) cancelSafely('stream speech', () => speaker.cancel());
+      cancelSafely('tts', () => this.tts.cancel());
+      await Promise.allSettled(cancellations);
+      return true;
+    } catch (error) {
+      this.log.warn('[voice] interruptSpeech failed: ' + errorMessage(error));
+      return false;
+    }
+  }
+
   /** Feed one raw PCM16 chunk from the microphone. */
   handleAudio(chunk) {
+    this._measureLevel(chunk);
     if (this._vad === null || this._stopped) return;
     let events;
     try {
@@ -455,6 +520,7 @@ export class VoiceLoop {
 
   async _submitText(text, generation) {
     this._touch();
+    this._suppressSpeakUntilTurnEnd = false;
     this._resetStreamTracking();
     if (this._streamSpeaker !== null) this._streamSpeaker.reset();
     this.reply.begin(text);
@@ -486,6 +552,16 @@ export class VoiceLoop {
     const data = event.data !== null && typeof event.data === 'object' ? event.data : {};
     if (type === 'turn/start') {
       this._touch();
+      const turn = Number.isFinite(data.turn) ? data.turn : null;
+      // A new turn clears the caption. A suppression flag raised while waiting
+      // for THIS reply (reply bound but turn not started yet) must survive the
+      // reply turn's own start; a flag left over from an already-finished turn
+      // is stale and is dropped here.
+      const replyTurnPending = this.reply.active && this.reply.turn === null;
+      if (this._suppressSpeakUntilTurnEnd && !replyTurnPending) {
+        this._suppressSpeakUntilTurnEnd = false;
+      }
+      this._resetAssistantText(turn);
       if (this.reply.onTurnStart(data.turn)) {
         this._clearReplyTimer();
         this.log.info('[voice] reply turn ' + data.turn + ' started');
@@ -497,6 +573,7 @@ export class VoiceLoop {
       if (text === '') return;
       this._touch();
       this._stat('onAssistantText', text);
+      this._appendCommittedAssistantText(Number.isFinite(data.turn) ? data.turn : null, text);
       if (this.reply.onAssistantText(data.turn, text)) {
         this.log.info('[voice] assistant text in turn ' + data.turn + ' (+' + text.length + ' chars)');
       }
@@ -514,6 +591,8 @@ export class VoiceLoop {
 
   async _handleReply(result) {
     const reasonKind = result.reasonKind;
+    const suppressPlayback = this._suppressSpeakUntilTurnEnd;
+    this._suppressSpeakUntilTurnEnd = false;
     const streamedText = this._streamSeenText;
     const hasStreamed = typeof streamedText === 'string' && streamedText.trim() !== '';
     this.log.info('[voice] reply turn ' + result.turn + ' ended (' + String(reasonKind) + ', '
@@ -524,6 +603,21 @@ export class VoiceLoop {
       if (hasStreamed) await this._cancelStreamSpeech('turn-not-completed');
       this._resetStreamTracking();
       this._listening('turn-not-completed');
+      return;
+    }
+    if (suppressPlayback) {
+      // Client Stop: keep the full reply for "repeat that", but never speak it.
+      const cached = prepareSpeechText(result.text, {
+        maxChars: this.maxSpeechChars,
+        maxSentenceChars: this.maxSentenceChars,
+        threshold: this.languageThreshold,
+      });
+      if (cached.segments.length > 0) this._lastReplySegments = cached.segments;
+      if (hasStreamed) await this._cancelStreamSpeech('client-suppressed');
+      this._resetStreamTracking();
+      this.log.info('[voice] client interrupt: skipping reply playback for turn ' + result.turn
+        + ' (kept ' + this._lastReplySegments.length + ' segment(s) for repeat)');
+      this._listening('client-suppressed');
       return;
     }
     if (hasStreamed && this._streamSpeaker !== null) {
@@ -619,6 +713,11 @@ export class VoiceLoop {
     if (this._streamTurn === null || (expectedTurn !== null && this._streamTurn !== expectedTurn)) return;
     this._streamSeenText += chunk.text;
     this._touch();
+    this._appendStreamedAssistantText(this._streamTurn, chunk.text);
+    if (this._suppressSpeakUntilTurnEnd) {
+      this.log.debug('[voice] streamed speech suppressed by client interrupt');
+      return;
+    }
     speaker.pushText(chunk.text);
   }
 
@@ -626,6 +725,11 @@ export class VoiceLoop {
   _onBeforeStreamSpeak() {
     if (this._stopped) return;
     this._touch();
+    if (this._suppressSpeakUntilTurnEnd) {
+      this.log.info('[voice] streamed segment suppressed by client interrupt');
+      this._cancelSpeech('client-suppress');
+      return;
+    }
     const state = this.sm.state;
     if (state !== 'speaking' && state !== 'awaiting-reply' && state !== 'transcribing') {
       this.log.info('[voice] suppressing streamed speech in state ' + state);
@@ -668,6 +772,68 @@ export class VoiceLoop {
     this._streamTurn = null;
     this._streamAttempt = null;
     this._streamSeenText = '';
+  }
+
+  /** Caption text: committed assistant messages plus the live stream tail. */
+  _assistantTextValue() {
+    const committed = this._assistantCommitted;
+    const streamed = this._assistantStream;
+    if (streamed === '') return committed;
+    if (committed === '') return streamed;
+    return committed + '\n' + streamed;
+  }
+
+  /** Clear the caption for a new (or no) turn. */
+  _resetAssistantText(turn) {
+    this._assistantTurn = Number.isFinite(turn) ? turn : null;
+    this._assistantCommitted = '';
+    this._assistantStream = '';
+  }
+
+  /**
+   * Fold an authoritative assistant/message into the caption. The committed
+   * message supersedes whatever the current attempt already streamed.
+   */
+  _appendCommittedAssistantText(turn, text) {
+    if (typeof text !== 'string' || text === '') return;
+    const value = Number.isFinite(turn) ? turn : this._assistantTurn;
+    if (value !== this._assistantTurn) this._resetAssistantText(value);
+    this._assistantCommitted = this._assistantCommitted === ''
+      ? text
+      : this._assistantCommitted + '\n' + text;
+    this._assistantStream = '';
+  }
+
+  /** Append one live stream delta to the caption (converged by messages later). */
+  _appendStreamedAssistantText(turn, delta) {
+    if (typeof delta !== 'string' || delta === '') return;
+    const value = Number.isFinite(turn) ? turn : this._assistantTurn;
+    if (value !== this._assistantTurn) this._resetAssistantText(value);
+    this._assistantStream += delta;
+  }
+
+  /**
+   * Track the most recent 20 ms frame level in dBFS for the client volume bar.
+   * Chunks are re-framed here because the VAD keeps its frames private.
+   */
+  _measureLevel(chunk) {
+    if (chunk === null || chunk === undefined) return;
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    if (buffer.length === 0) return;
+    const frameBytes = this._levelFrameBytes;
+    const combined = this._levelLeftover.length === 0 ? buffer : Buffer.concat([this._levelLeftover, buffer]);
+    const usable = combined.length - (combined.length % frameBytes);
+    if (usable < frameBytes) {
+      this._levelLeftover = Buffer.from(combined);
+      return;
+    }
+    this._lastLevelDb = rmsDbFromPcm16(combined.subarray(usable - frameBytes, usable));
+    this._levelLeftover = usable === combined.length ? EMPTY_BUFFER : Buffer.from(combined.subarray(usable));
+  }
+
+  _resetLevel() {
+    this._lastLevelDb = MIN_LEVEL_DB;
+    this._levelLeftover = EMPTY_BUFFER;
   }
 
   _isSpeaking() {

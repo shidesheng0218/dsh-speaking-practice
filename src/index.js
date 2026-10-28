@@ -35,7 +35,7 @@ const IMPORT_VERSION = (() => {
 })();
 
 async function loadLocalModules() {
-  const [logModule, micModule, ttsModule, loopModule, optionsModule, textModule, coachModule, statsModule, lightRecapModule] = await Promise.all([
+  const [logModule, micModule, ttsModule, loopModule, optionsModule, textModule, coachModule, statsModule, lightRecapModule, serverModule, shadowSessionModule] = await Promise.all([
     import('./log.js' + IMPORT_VERSION),
     import('./mic.js' + IMPORT_VERSION),
     import('./tts.js' + IMPORT_VERSION),
@@ -45,6 +45,8 @@ async function loadLocalModules() {
     import('./coach.js' + IMPORT_VERSION),
     import('./core/stats.js' + IMPORT_VERSION),
     import('./core/light-recap.js' + IMPORT_VERSION),
+    import('./server.js' + IMPORT_VERSION),
+    import('./shadow-session.js' + IMPORT_VERSION),
   ]);
   return {
     createLog: logModule.createLog,
@@ -61,6 +63,9 @@ async function loadLocalModules() {
     resolvePracticeDir: coachModule.resolvePracticeDir,
     createSessionStats: statsModule.createSessionStats,
     writeLightRecap: lightRecapModule.writeLightRecap,
+    registerVoiceRoutes: serverModule.registerVoiceRoutes,
+    createShadowSession: shadowSessionModule.createShadowSession,
+    coachPaths: coachModule.coachPaths,
   };
 }
 
@@ -122,6 +127,9 @@ export async function apply(ctx, rawConfig) {
     resolvePracticeDir,
     createSessionStats,
     writeLightRecap,
+    registerVoiceRoutes,
+    createShadowSession,
+    coachPaths,
   } = await loadLocalModules();
   const options = normalizeOptions(rawConfig);
   const logPath = resolveLogPath(options.practiceRoot, options.logFile);
@@ -157,6 +165,26 @@ export async function apply(ctx, rawConfig) {
   } else {
     speaker = createSpeaker({ subprocess: services.subprocess, config: options, log });
   }
+
+  // Shadowing (listen & repeat) owns the mic only while the conversation loop is off.
+  let drillsCache = null;
+  async function getDrills() {
+    if (drillsCache !== null) return drillsCache;
+    const file = join(coachPaths().root, 'content', 'pronunciation', 'drills.json');
+    const text = await readFile(file, 'utf8');
+    const parsed = JSON.parse(text);
+    drillsCache = parsed;
+    return parsed;
+  }
+  const shadowSession = createShadowSession({
+    log,
+    config: options,
+    speaker,
+    createMic,
+    subprocess: services.subprocess,
+    stt: () => sttAdapter(),
+    getDrills,
+  });
 
   let active = null;
 
@@ -268,6 +296,7 @@ export async function apply(ctx, rawConfig) {
       scenarioId: scenario.id,
       scenarioTitle: typeof scenario.name === 'string' ? scenario.name : scenario.id,
       level: typeof scenario.level === 'string' ? scenario.level : '',
+      assistantText: '',
       coachScope,
       practiceDir,
     };
@@ -498,7 +527,8 @@ export async function apply(ctx, rawConfig) {
   async function voiceScenarios() {
     let listing;
     try {
-      listing = await loadScenarios({ log });
+      const loaded = await loadScenarios({ log });
+      listing = Array.isArray(loaded) ? loaded : (loaded !== null && typeof loaded === 'object' && Array.isArray(loaded.scenarios) ? loaded.scenarios : []);
     } catch (error) {
       return { kind: 'error', text: '/voice scenarios failed: ' + errorText(error) + ' (log: ' + logPath + ')' };
     }
@@ -563,6 +593,13 @@ export async function apply(ctx, rawConfig) {
     try {
       if (lower === '' || lower === 'status') return voiceStatus();
       if (lower === 'scenarios' || lower === 'list') return await voiceScenarios();
+      if (lower === 'shadow' || lower.startsWith('shadow ')) {
+        const count = Number(lower.split(/\s+/)[1]);
+        const result = await overlayShadowStart({ count: Number.isFinite(count) ? count : 5 });
+        return result !== null && typeof result === 'object' && result.ok === false
+          ? { kind: 'error', text: '/voice shadow 失败：' + String(result.error) }
+          : { kind: 'success', text: '跟读练习已开始（' + String(result !== null && typeof result === 'object' ? result.total ?? 5 : 5) + ' 句）。' };
+      }
       if (lower === 'selftest') {
         if (options.selfTest !== true) {
           // Allow the diagnostic to run on demand even when startup self-test is off.
@@ -620,6 +657,14 @@ export async function apply(ctx, rawConfig) {
         ? agent.session.id
         : '';
       if (streamSessionId !== current.sessionId) return;
+      if (frame !== null && typeof frame === 'object') {
+        if (frame.type === 'start') {
+          current.assistantText = '';
+        } else if (frame.type === 'chunk' && frame.chunk !== null && typeof frame.chunk === 'object'
+          && frame.chunk.type === 'text-delta' && typeof frame.chunk.text === 'string') {
+          current.assistantText = (typeof current.assistantText === 'string' ? current.assistantText : '') + frame.chunk.text;
+        }
+      }
       if (typeof current.loop.onStreamFrame === 'function') current.loop.onStreamFrame(frame);
     } catch (error) {
       log.warn('assistant stream handling failed: ' + errorText(error));
@@ -631,6 +676,7 @@ export async function apply(ctx, rawConfig) {
       const current = active;
       if (current === null) return;
       if (session === null || typeof session !== 'object' || session.id !== current.sessionId) return;
+      if (event !== null && typeof event === 'object' && event.type === 'turn/start') current.assistantText = '';
       current.loop.onSessionEvent(event);
     } catch (error) {
       log.error('session event handling failed: ' + errorText(error));
@@ -641,6 +687,11 @@ export async function apply(ctx, rawConfig) {
     const current = active;
     active = null;
     stopIdleWatch(current);
+    try {
+      await shadowSession.dispose();
+    } catch (error) {
+      log.warn('shadow dispose failed: ' + errorText(error));
+    }
     // Hot reload / uninstall must not leave an agent-scoped coach section
     // behind: release it even if the agent itself outlives this plugin mount.
     try {
@@ -666,6 +717,154 @@ export async function apply(ctx, rawConfig) {
     log.info('plugin disposed');
     await log.close();
   }, 'voice: dispose');
+
+  // ---- client overlay routes (v0.4) ---------------------------------------
+  let scenarioCache = null;
+
+  async function getScenarioList() {
+    if (scenarioCache !== null) return scenarioCache;
+    try {
+      const loaded = await loadScenarios({ log });
+      scenarioCache = Array.isArray(loaded) ? loaded : (loaded !== null && typeof loaded === 'object' && Array.isArray(loaded.scenarios) ? loaded.scenarios : []);
+    } catch (error) {
+      log.warn('scenario listing failed: ' + errorText(error));
+      scenarioCache = [];
+    }
+    return scenarioCache;
+  }
+
+  function resolveAgent(sessionId) {
+    if (services.agents === null || typeof services.agents.get !== 'function') return null;
+    let found = null;
+    try {
+      found = services.agents.get(sessionId);
+    } catch (_error) {
+      return null;
+    }
+    if (found === null || found === undefined) return null;
+    return found.agent !== undefined && found.agent !== null ? found.agent : found;
+  }
+
+  async function overlayState() {
+    const current = active;
+    let status = null;
+    if (current !== null && typeof current.loop.status === 'function') {
+      try {
+        status = current.loop.status();
+      } catch (error) {
+        log.warn('overlay status failed: ' + errorText(error));
+      }
+    }
+    const listing = await getScenarioList();
+    let coachSnapshot = null;
+    try {
+      coachSnapshot = coach.status();
+    } catch (_error) {
+      coachSnapshot = null;
+    }
+    return {
+      ok: true,
+      version: 1,
+      active: current !== null,
+      phase: status !== null && typeof status.state === 'string' ? status.state : 'idle',
+      scenario: current !== null && typeof current.scenarioId === 'string' ? current.scenarioId : '',
+      scenarioTitle: current !== null && typeof current.scenarioTitle === 'string' ? current.scenarioTitle : '',
+      level: current !== null && typeof current.level === 'string' ? current.level : '',
+      coach: coachSnapshot,
+      userText: status !== null && typeof status.lastTranscript === 'string' ? status.lastTranscript : '',
+      assistantText: (() => {
+        if (status !== null && typeof status.assistantText === 'string' && status.assistantText !== '') return status.assistantText;
+        return current !== null && typeof current.assistantText === 'string' ? current.assistantText : '';
+      })(),
+      levelDb: status !== null && Number.isFinite(Number(status.lastLevelDb)) ? Number(status.lastLevelDb) : 0,
+      elapsedMs: current !== null ? Math.max(0, Date.now() - current.startedAt) : 0,
+      lastError: status !== null && typeof status.lastError === 'string' ? status.lastError : '',
+      speaking: status !== null && status.speaking === true,
+      scenarios: listing.map((item) => ({
+        id: typeof item.id === 'string' ? item.id : '',
+        name: typeof item.name === 'string' ? item.name : '',
+        nameZh: typeof item.nameZh === 'string' ? item.nameZh : '',
+        level: typeof item.level === 'string' ? item.level : '',
+      })),
+      practiceDir: current !== null && typeof current.practiceDir === 'string' ? current.practiceDir : '',
+      shadow: shadowSession.getState(),
+    };
+  }
+
+  async function overlayStart(input) {
+    const sessionId = input !== null && typeof input === 'object' && typeof input.sessionId === 'string' ? input.sessionId : '';
+    const scenario = input !== null && typeof input === 'object' && typeof input.scenario === 'string' ? input.scenario : '';
+    if (sessionId === '') return { ok: false, error: 'no session id' };
+    const agent = resolveAgent(sessionId);
+    if (agent === null) {
+      return { ok: false, error: '这个会话还没有活跃 agent：先在输入框发一条消息，再点开始。' };
+    }
+    const result = await voiceOn(agent, scenario);
+    const ok = result !== null && typeof result === 'object' && result.kind === 'success';
+    return {
+      ok,
+      message: result !== null && typeof result === 'object' && typeof result.text === 'string' ? result.text : '',
+      error: ok ? '' : (result !== null && typeof result === 'object' && typeof result.text === 'string' ? result.text : '启动失败'),
+    };
+  }
+
+  async function overlayStop() {
+    const shadowResult = await shadowSession.stop('client');
+    const result = await voiceOff('client', true);
+    return { ok: true, wasActive: result !== null && result.wasActive === true, shadowWasActive: shadowResult !== null && shadowResult.wasActive === true };
+  }
+
+  async function overlayStopSpeech() {
+    const current = active;
+    if (current === null || current.loop === null || typeof current.loop.interruptSpeech !== 'function') {
+      return { ok: true, skipped: true };
+    }
+    await current.loop.interruptSpeech();
+    return { ok: true };
+  }
+
+  async function overlayShadowStart(input) {
+    if (speaker === null || services.subprocess === null) {
+      return { ok: false, error: '语音服务不可用（subprocess/say 缺失）' };
+    }
+    if (active !== null) await voiceOff('shadow', false);
+    const count = input !== null && typeof input === 'object' && Number.isFinite(Number(input.count)) ? Number(input.count) : 5;
+    return shadowSession.start({ count });
+  }
+
+  async function overlayShadowNext() {
+    return shadowSession.next();
+  }
+
+  async function overlayShadowStop() {
+    return shadowSession.stop('client');
+  }
+
+  ctx.effect(() => {
+    let disposeRoutes = null;
+    try {
+      disposeRoutes = registerVoiceRoutes(ctx, {
+        log,
+        getState: overlayState,
+        getScenarios: getScenarioList,
+        start: overlayStart,
+        stop: overlayStop,
+        stopSpeech: overlayStopSpeech,
+        shadowStart: overlayShadowStart,
+        shadowNext: overlayShadowNext,
+        shadowStop: overlayShadowStop,
+      });
+    } catch (error) {
+      log.warn('client overlay routes failed to register: ' + errorText(error));
+    }
+    return () => {
+      try {
+        if (typeof disposeRoutes === 'function') disposeRoutes();
+      } catch (_error) {
+        // Route teardown is best effort.
+      }
+    };
+  }, 'voice: client routes');
 
   log.info('voice-practice ready');
 

@@ -1,0 +1,59 @@
+{
+  "id": "ielts-part2",
+  "name": "IELTS Speaking Part 2",
+  "nameZh": "雅思口语 Part 2",
+  "level": "B1-B2",
+  "durationMinutes": 15,
+  "goal": "用 1 分钟准备和 2 分钟陈述完成一张 cue card，并用追问把观点讲深。",
+  "roles": {
+    "coach": "雅思口语考官，语气友好但不打断，严格按 1+2 分钟节奏控时。",
+    "learner": "考生，按题卡做 2 分钟独白，允许看关键词提示。"
+  },
+  "opening": "Good morning, I'm Alex, your examiner today. Here's your cue card: describe a person who has influenced you — who they are, how you know them, what they did, and why they matter to you.",
+  "beats": [
+    {
+      "id": "cue-card",
+      "intent": "用 1 分钟读题卡，只记 3-4 个关键词，不写完整句。",
+      "coachMove": "读题卡四个提示点并计时 1 分钟，到点说 'You can start now.'。"
+    },
+    {
+      "id": "long-turn",
+      "intent": "按关键词连续说 1-2 分钟，覆盖人物、关系、细节和感受。",
+      "coachMove": "全程不打断；到 90 秒若停顿，轻声提示 'You still have thirty seconds.'。"
+    },
+    {
+      "id": "follow-ups",
+      "intent": "回答 2-3 个追问，每个给出一个理由或例子。",
+      "coachMove": "一次只问一个问题，如 'Why do you think that is?'，答完再问下一个。"
+    },
+    {
+      "id": "round-two",
+      "intent": "换一张题卡，30 秒准备后说 1 分钟版本，复用刚才的结构。",
+      "coachMove": "换卡 'Describe a place you like to spend time in' 或 'Describe an experience that taught you something'，30 秒准备 + 1 分钟陈述，只记 2 个改进点。"
+    }
+  ],
+  "usefulPhrases": [
+    "The person I'd like to talk about is ...",
+    "I first got to know him when ...",
+    "What stands out most is ...",
+    "Another thing worth mentioning is ...",
+    "Looking back, I think ...",
+    "That's why this person means a lot to me.",
+    "As for why it matters, ...",
+    "If I had to describe her in one word, I'd say ..."
+  ],
+  "successCriteria": [
+    "独白持续 1 分钟以上，覆盖题卡 4 个提示点。",
+    "用至少 2 个连接词推进（first, what's more, looking back）。",
+    "追问回答有理由或例子，不只说 yes 或 no。",
+    "用上 3 个以上与题卡相关的话题词汇。",
+    "允许看关键词，但不整句念稿。"
+  ],
+  "wrapUp": "That's the end of Part 2. Thank you — if you answered this card again, what would you do differently?",
+  "recapFocus": [
+    "长独白是否有开头、细节、感受和收尾。",
+    "描述过去经历时时态是否一致。",
+    "连接词和话题词汇的丰富度。",
+    "停顿与 um / you know 的频率。"
+  ]
+}
