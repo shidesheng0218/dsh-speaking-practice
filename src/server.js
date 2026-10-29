@@ -72,6 +72,7 @@ export function registerVoiceRoutes(ctx, deps) {
     return () => {};
   }
   let lastStateLogAt = 0;
+  const pinged = new Set();
   return webServer.register({
     kind: 'prefix',
     path: PREFIX,
@@ -101,6 +102,16 @@ export function registerVoiceRoutes(ctx, deps) {
           const body = await readJsonBody(req);
           const result = await deps.start({ sessionId: typeof body.sessionId === 'string' ? body.sessionId : '', scenario: typeof body.scenario === 'string' ? body.scenario : '' });
           sendJson(res, result !== null && typeof result === 'object' && result.ok === false ? 400 : 200, result);
+          return;
+        }
+        if (req.method === 'POST' && sub === '/ping') {
+          const body = await readJsonBody(req);
+          const event = typeof body.event === 'string' ? body.event.slice(0, 80) : 'unknown';
+          if (!pinged.has(event)) {
+            pinged.add(event);
+            log?.info?.('client event: ' + event);
+          }
+          sendJson(res, 200, { ok: true });
           return;
         }
         if (req.method === 'POST' && sub === '/stop') {
