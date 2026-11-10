@@ -750,4 +750,43 @@ test('interrupt during fallback playback does not suppress the next reply', asyn
   assert.match(spokenTexts(calls)[1], /Next reply should speak/);
 });
 
+test('speaker-echo transcript after barge-in or recent speech is filtered without submitting', async () => {
+  const gate = deferred();
+  let nextTranscript = 'hello there';
+  const harness = makeHarness({
+    ttsGate: gate,
+    stt: async () => ({ text: nextTranscript }),
+  });
+  const { loop, vadEvents, calls } = harness;
+  await loop.start();
+  await driveUtterance(harness);
+  assert.deepEqual(calls.submit, ['hello there']);
+
+  loop.onSessionEvent({ type: 'turn/start', data: { turn: 1 } });
+  loop.onSessionEvent({
+    type: 'assistant/message',
+    data: { turn: 1, message: { content: [{ type: 'text', text: 'How has your week been so far?' }] } },
+  });
+  loop.onSessionEvent({ type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } });
+  await loop.waitForState('speaking');
+
+  // Simulate open-mic speaker bleed triggering barge-in with words from the assistant's reply.
+  nextTranscript = 'how has your week been';
+  vadEvents.push(SPEECH_START);
+  loop.handleAudio(Buffer.alloc(640));
+  gate.resolve();
+  await loop.settled();
+  vadEvents.push(utterance());
+  loop.handleAudio(Buffer.alloc(640));
+  await loop.settled();
+
+  assert.equal(loop.state, 'listening', 'echo transcript returns to listening');
+  assert.deepEqual(calls.submit, ['hello there'], 'echo transcript is not submitted to the agent');
+
+  // A genuine user response right afterwards is submitted normally.
+  nextTranscript = 'It was pretty relaxing actually';
+  await driveUtterance(harness);
+  assert.deepEqual(calls.submit, ['hello there', 'It was pretty relaxing actually']);
+});
+
 

@@ -6,7 +6,12 @@ import { fileURLToPath } from 'node:url';
 
 const abs = (relativePath) => fileURLToPath(new URL(relativePath, import.meta.url));
 const SOURCE_FILES = [
+  '../plugin.js',
+  '../lib/client.js',
   '../src/index.js',
+  '../src/server.js',
+  '../src/coach.js',
+  '../src/shadow-session.js',
   '../src/mic.js',
   '../src/tts.js',
   '../src/log.js',
@@ -17,8 +22,14 @@ const SOURCE_FILES = [
   '../src/core/reply.js',
   '../src/core/loop.js',
   '../src/core/options.js',
+  '../src/core/shadow.js',
+  '../src/core/stats.js',
+  '../src/core/light-recap.js',
+  '../src/core/stream-speech.js',
 ];
-const PURE_FILES = SOURCE_FILES.filter((file) => file !== '../src/index.js');
+const PURE_FILES = SOURCE_FILES.filter(
+  (file) => file !== '../src/index.js' && file !== '../plugin.js' && file !== '../lib/client.js',
+);
 
 test('every source file parses as ESM', () => {
   for (const relativePath of SOURCE_FILES) {
@@ -35,8 +46,11 @@ test('plugin entry exports the cordis host contract', () => {
   assert.match(source, /export async function apply\(ctx, rawConfig\)/);
   for (const key of [
     'practiceRoot',
+    'ttsEngine',
     'englishVoice',
     'chineseVoice',
+    'edgeEnglishVoice',
+    'edgeChineseVoice',
     'rate',
     'language',
     'silenceMs',

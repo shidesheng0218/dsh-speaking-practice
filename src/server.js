@@ -35,6 +35,16 @@ export function sendJson(res, status, value) {
   res.end(body);
 }
 
+/**
+ * Format one Server-Sent Events frame.
+ * @param {string} event
+ * @param {unknown} data
+ * @returns {string}
+ */
+export function formatSseFrame(event, data) {
+  return 'event: ' + event + '\ndata: ' + JSON.stringify(data) + '\n\n';
+}
+
 export async function readJsonBody(req, limit = MAX_BODY_BYTES) {
   const chunks = [];
   let size = 0;
@@ -73,7 +83,53 @@ export function registerVoiceRoutes(ctx, deps) {
   }
   let lastStateLogAt = 0;
   const pinged = new Set();
-  return webServer.register({
+  const sseClients = new Set();
+  let unsubscribeState = null;
+
+  async function broadcastState() {
+    if (sseClients.size === 0) return;
+    let payload;
+    try {
+      payload = await deps.getState();
+    } catch (error) {
+      log?.warn?.('sse state snapshot failed: ' + errorText(error));
+      return;
+    }
+    const frame = formatSseFrame('state', payload);
+    for (const client of Array.from(sseClients)) {
+      try {
+        client.res.write(frame);
+      } catch (_error) {
+        cleanupClient(client);
+      }
+    }
+  }
+
+  function cleanupClient(client) {
+    if (!sseClients.has(client)) return;
+    sseClients.delete(client);
+    if (client.heartbeat !== null) {
+      clearInterval(client.heartbeat);
+      client.heartbeat = null;
+    }
+    try {
+      if (!client.res.writableEnded) client.res.end();
+    } catch (_error) {
+      // Ignore already-closed sockets.
+    }
+  }
+
+  if (typeof deps.subscribe === 'function') {
+    try {
+      unsubscribeState = deps.subscribe(() => {
+        void broadcastState();
+      });
+    } catch (error) {
+      log?.warn?.('sse subscribe hook failed: ' + errorText(error));
+    }
+  }
+
+  const disposeRoute = webServer.register({
     kind: 'prefix',
     path: PREFIX,
     handler: async (req, res) => {
@@ -84,6 +140,34 @@ export function registerVoiceRoutes(ctx, deps) {
       const url = new URL(req.url || '/', 'http://localhost');
       const sub = url.pathname.replace(new RegExp('^' + PREFIX), '') || '/';
       try {
+        if (req.method === 'GET' && sub === '/events') {
+          res.writeHead(200, {
+            'content-type': 'text/event-stream; charset=utf-8',
+            'cache-control': 'no-cache, no-store, no-transform',
+            connection: 'keep-alive',
+            'x-accel-buffering': 'no',
+          });
+          if (typeof res.flushHeaders === 'function') res.flushHeaders();
+          const client = { res, heartbeat: null };
+          sseClients.add(client);
+          client.heartbeat = setInterval(() => {
+            try {
+              res.write(': keepalive\n\n');
+            } catch (_error) {
+              cleanupClient(client);
+            }
+          }, 15000);
+          if (typeof client.heartbeat.unref === 'function') client.heartbeat.unref();
+          req.on?.('close', () => cleanupClient(client));
+          res.on?.('close', () => cleanupClient(client));
+          try {
+            const initial = await deps.getState();
+            if (sseClients.has(client)) res.write(formatSseFrame('state', initial));
+          } catch (error) {
+            log?.warn?.('initial sse state push failed: ' + errorText(error));
+          }
+          return;
+        }
         if (req.method === 'GET' && (sub === '/state' || sub === '/')) {
           const now = Date.now();
           if (now - lastStateLogAt > 60000) {
@@ -100,7 +184,11 @@ export function registerVoiceRoutes(ctx, deps) {
         if (req.method === 'POST' && sub === '/start') {
           log?.info?.('overlay start requested');
           const body = await readJsonBody(req);
-          const result = await deps.start({ sessionId: typeof body.sessionId === 'string' ? body.sessionId : '', scenario: typeof body.scenario === 'string' ? body.scenario : '' });
+          const result = await deps.start({
+            sessionId: typeof body.sessionId === 'string' ? body.sessionId : '',
+            scenario: typeof body.scenario === 'string' ? body.scenario : '',
+            cwd: typeof body.cwd === 'string' ? body.cwd : '',
+          });
           sendJson(res, result !== null && typeof result === 'object' && result.ok === false ? 400 : 200, result);
           return;
         }
@@ -128,6 +216,10 @@ export function registerVoiceRoutes(ctx, deps) {
           sendJson(res, 200, await deps.shadowStart({ sessionId: typeof body.sessionId === 'string' ? body.sessionId : '', count: Number(body.count) || 5 }));
           return;
         }
+        if (req.method === 'POST' && sub === '/shadow/replay' && typeof deps.shadowReplay === 'function') {
+          sendJson(res, 200, await deps.shadowReplay());
+          return;
+        }
         if (req.method === 'POST' && sub === '/shadow/next' && typeof deps.shadowNext === 'function') {
           sendJson(res, 200, await deps.shadowNext());
           return;
@@ -143,4 +235,17 @@ export function registerVoiceRoutes(ctx, deps) {
       }
     },
   });
+
+  return () => {
+    if (typeof unsubscribeState === 'function') {
+      try {
+        unsubscribeState();
+      } catch (_error) {
+        // Ignore.
+      }
+      unsubscribeState = null;
+    }
+    for (const client of Array.from(sseClients)) cleanupClient(client);
+    if (typeof disposeRoute === 'function') disposeRoute();
+  };
 }

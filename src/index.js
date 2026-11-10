@@ -71,8 +71,11 @@ async function loadLocalModules() {
 
 export const Config = z.object({
   practiceRoot: z.string().default(''),
+  ttsEngine: z.string().default('auto'),
   englishVoice: z.string().default('Samantha'),
   chineseVoice: z.string().default('Tingting'),
+  edgeEnglishVoice: z.string().default('en-US-JennyNeural'),
+  edgeChineseVoice: z.string().default('zh-CN-XiaoxiaoNeural'),
   rate: z.natural().min(80).max(320).default(175),
   language: z.string().default('auto'),
   silenceMs: z.natural().min(250).max(2000).default(600),
@@ -143,9 +146,12 @@ export async function apply(ctx, rawConfig) {
     subprocess: safeGet(ctx, 'subprocess'),
     agents: safeGet(ctx, 'agents'),
     systemPrompt: safeGet(ctx, 'systemPrompt'),
+    sessionController: safeGet(ctx, 'sessionController'),
+    sessions: safeGet(ctx, 'sessions'),
   };
+  const optionalServices = new Set(['sessionController', 'sessions']);
   for (const serviceName of Object.keys(services)) {
-    if (services[serviceName] === null) {
+    if (services[serviceName] === null && !optionalServices.has(serviceName)) {
       log.warn('service "' + serviceName + '" is unavailable; voice features depending on it are disabled');
     }
   }
@@ -176,6 +182,22 @@ export async function apply(ctx, rawConfig) {
     drillsCache = parsed;
     return parsed;
   }
+  const stateListeners = new Set();
+  function emitStateChange(reason = 'update') {
+    for (const listener of Array.from(stateListeners)) {
+      try {
+        listener(reason);
+      } catch (_error) {
+        // Ignore subscriber failure.
+      }
+    }
+  }
+  function subscribeState(listener) {
+    if (typeof listener !== 'function') return () => {};
+    stateListeners.add(listener);
+    return () => stateListeners.delete(listener);
+  }
+
   const shadowSession = createShadowSession({
     log,
     config: options,
@@ -184,6 +206,7 @@ export async function apply(ctx, rawConfig) {
     subprocess: services.subprocess,
     stt: () => sttAdapter(),
     getDrills,
+    onChange: (reason) => emitStateChange('shadow:' + String(reason)),
   });
 
   let active = null;
@@ -253,6 +276,11 @@ export async function apply(ctx, rawConfig) {
     const scenario = activation !== null && activation.scenario !== undefined && activation.scenario !== null
       ? activation.scenario
       : prepared.scenario;
+    const openingPrompt = activation !== null && typeof activation.openingPrompt === 'string' && activation.openingPrompt.trim() !== ''
+      ? activation.openingPrompt.trim()
+      : (typeof scenario.openingPrompt === 'string' && scenario.openingPrompt.trim() !== ''
+        ? scenario.openingPrompt.trim()
+        : 'Voice mode is on. I am listening.');
     const coachScope = activation !== null && activation.injected === true ? activation.scope : '';
     if (coachScope === '') {
       log.warn('coach prompt is not active; voice mode continues without it (see ' + logPath + ')');
@@ -274,6 +302,7 @@ export async function apply(ctx, rawConfig) {
       stats: sessionStats,
       submit: (text) => submitTranscript(sessionId, text),
       requestVoiceOff: (reason) => voiceOff(typeof reason === 'string' && reason !== '' ? reason : 'voice-command', true),
+      onChange: (reason) => emitStateChange('loop:' + String(reason)),
       onFatal: (error) => {
         log.error('microphone fatal; leaving voice mode: ' + errorText(error));
         // Speak a human explanation before the loop is torn down.
@@ -324,9 +353,10 @@ export async function apply(ctx, rawConfig) {
     } catch (error) {
       log.warn('speech-to-text prepare failed: ' + errorText(error));
     }
-    loop.announce('Voice mode is on. I am listening.').catch((error) => {
+    loop.announce(openingPrompt).catch((error) => {
       log.warn('on announcement failed: ' + errorText(error));
     });
+    emitStateChange('voice-on');
     log.info('voice mode ON session=' + shortId(sessionId) + ' cwd=' + cwd
       + ' scenario=' + scenario.id + ' coach=' + (coachScope === '' ? 'off' : coachScope));
     return {
@@ -343,6 +373,7 @@ export async function apply(ctx, rawConfig) {
     const current = active;
     active = null;
     stopIdleWatch(current);
+    emitStateChange('voice-off');
     // Remove the coach section before stopping the loop so the next model step
     // can never be assembled from a half-released prompt.
     await coach.release();
@@ -568,7 +599,11 @@ export async function apply(ctx, rawConfig) {
       throw new Error('ctx.agents service missing');
     }
     const found = agents.get(sessionId);
-    const agent = found !== null && typeof found === 'object' && found.agent !== undefined ? found.agent : found;
+    let agent = found !== null && typeof found === 'object' && found.agent !== undefined ? found.agent : found;
+    if (agent === null || agent === undefined) {
+      const woken = await ensureSessionAgent(sessionId);
+      agent = woken.agent;
+    }
     if (agent === null || agent === undefined) {
       throw new Error('no live agent for session ' + shortId(sessionId) + ' (open the session first)');
     }
@@ -734,15 +769,120 @@ export async function apply(ctx, rawConfig) {
   }
 
   function resolveAgent(sessionId) {
-    if (services.agents === null || typeof services.agents.get !== 'function') return null;
-    let found = null;
-    try {
-      found = services.agents.get(sessionId);
-    } catch (_error) {
-      return null;
+    if (typeof sessionId !== 'string' || sessionId === '') return null;
+    if (services.agents !== null && typeof services.agents.get === 'function') {
+      try {
+        const found = services.agents.get(sessionId);
+        if (found !== null && found !== undefined) {
+          return found.agent !== undefined && found.agent !== null ? found.agent : found;
+        }
+      } catch (_error) {
+        // Fall through to sessionController fallback.
+      }
     }
-    if (found === null || found === undefined) return null;
-    return found.agent !== undefined && found.agent !== null ? found.agent : found;
+    const ctrlAgents = services.sessionController !== null && typeof services.sessionController === 'object'
+      ? services.sessionController.agents
+      : null;
+    if (ctrlAgents !== null && ctrlAgents !== undefined && typeof ctrlAgents.get === 'function') {
+      try {
+        const found = ctrlAgents.get(sessionId);
+        if (found !== null && found !== undefined) {
+          return found.agent !== undefined && found.agent !== null ? found.agent : found;
+        }
+      } catch (_error) {
+        // Ignore.
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Resolve or lazily wake an agent for a session that may be brand-new (never sent a message).
+   * If sessionId is empty, also attempts to reuse or create a session via sessionController.
+   */
+  async function ensureSessionAgent(sessionId, preferredCwd = '') {
+    let targetId = typeof sessionId === 'string' ? sessionId.trim() : '';
+    if (targetId !== '') {
+      const existing = resolveAgent(targetId);
+      if (existing !== null) return { agent: existing, sessionId: targetId };
+    }
+
+    const ctrl = services.sessionController;
+    const ctrlAgents = ctrl !== null && typeof ctrl === 'object' && ctrl.agents !== undefined
+      ? ctrl.agents
+      : null;
+
+    // 1. Try waking an existing blank session via sessionController.agents.resolveAgent(sessionId).
+    if (targetId !== '' && ctrlAgents !== null && typeof ctrlAgents.resolveAgent === 'function') {
+      try {
+        const resolved = await ctrlAgents.resolveAgent(targetId);
+        const agent = resolved !== null && typeof resolved === 'object' && resolved.agent !== undefined
+          ? resolved.agent
+          : resolved;
+        if (agent !== null && agent !== undefined) {
+          log.info('woke blank session agent via sessionController.agents.resolveAgent (' + shortId(targetId) + ')');
+          return { agent, sessionId: targetId };
+        }
+      } catch (error) {
+        log.warn('sessionController.agents.resolveAgent failed: ' + errorText(error));
+      }
+    }
+
+    // 2. Try services.agents.resolveAgent if exposed directly on ctx.agents.
+    if (targetId !== '' && services.agents !== null && typeof services.agents.resolveAgent === 'function') {
+      try {
+        const resolved = await services.agents.resolveAgent(targetId);
+        const agent = resolved !== null && typeof resolved === 'object' && resolved.agent !== undefined
+          ? resolved.agent
+          : resolved;
+        if (agent !== null && agent !== undefined) {
+          log.info('woke blank session agent via ctx.agents.resolveAgent (' + shortId(targetId) + ')');
+          return { agent, sessionId: targetId };
+        }
+      } catch (error) {
+        log.warn('ctx.agents.resolveAgent failed: ' + errorText(error));
+      }
+    }
+
+    // 3. Create or reuse a session via sessionController.createSession when available.
+    if (ctrl !== null && typeof ctrl === 'object' && typeof ctrl.createSession === 'function') {
+      try {
+        const cwd = (typeof preferredCwd === 'string' && preferredCwd.trim() !== '')
+          ? preferredCwd.trim()
+          : (options.practiceRoot !== '' ? options.practiceRoot : process.cwd());
+        const created = await ctrl.createSession({
+          ...(targetId !== '' ? { sessionId: targetId } : {}),
+          cwd,
+          reusable: true,
+        });
+        const newSessionId = created !== null && typeof created === 'object'
+          ? (typeof created.sessionId === 'string'
+            ? created.sessionId
+            : (created.session && typeof created.session.id === 'string' ? created.session.id : targetId))
+          : targetId;
+        const directAgent = created !== null && typeof created === 'object' && created.agent !== undefined
+          ? created.agent
+          : null;
+        if (directAgent !== null) {
+          return { agent: directAgent, sessionId: newSessionId || targetId };
+        }
+        if (newSessionId !== '') {
+          targetId = newSessionId;
+          const postCreate = resolveAgent(targetId)
+            ?? (ctrlAgents !== null && typeof ctrlAgents.resolveAgent === 'function'
+              ? await ctrlAgents.resolveAgent(targetId).then((r) => (r && r.agent ? r.agent : r)).catch(() => null)
+              : null);
+          if (postCreate !== null) {
+            log.info('created/reused session and resolved agent (' + shortId(targetId) + ')');
+            return { agent: postCreate, sessionId: targetId };
+          }
+        }
+      } catch (error) {
+        log.warn('sessionController.createSession fallback failed: ' + errorText(error));
+      }
+    }
+
+    return { agent: null, sessionId: targetId };
   }
 
   async function overlayState() {
@@ -792,17 +932,21 @@ export async function apply(ctx, rawConfig) {
   }
 
   async function overlayStart(input) {
-    const sessionId = input !== null && typeof input === 'object' && typeof input.sessionId === 'string' ? input.sessionId : '';
+    const rawSessionId = input !== null && typeof input === 'object' && typeof input.sessionId === 'string' ? input.sessionId : '';
     const scenario = input !== null && typeof input === 'object' && typeof input.scenario === 'string' ? input.scenario : '';
-    if (sessionId === '') return { ok: false, error: 'no session id' };
-    const agent = resolveAgent(sessionId);
-    if (agent === null) {
+    const cwd = input !== null && typeof input === 'object' && typeof input.cwd === 'string' ? input.cwd : '';
+    const resolved = await ensureSessionAgent(rawSessionId, cwd);
+    if (resolved.agent === null) {
+      if (rawSessionId === '') {
+        return { ok: false, error: '当前还没有打开会话：请先新建或选择一个会话，再点击开始。' };
+      }
       return { ok: false, error: '这个会话还没有活跃 agent：先在输入框发一条消息，再点开始。' };
     }
-    const result = await voiceOn(agent, scenario);
+    const result = await voiceOn(resolved.agent, scenario);
     const ok = result !== null && typeof result === 'object' && result.kind === 'success';
     return {
       ok,
+      sessionId: resolved.sessionId,
       message: result !== null && typeof result === 'object' && typeof result.text === 'string' ? result.text : '',
       error: ok ? '' : (result !== null && typeof result === 'object' && typeof result.text === 'string' ? result.text : '启动失败'),
     };
@@ -836,6 +980,10 @@ export async function apply(ctx, rawConfig) {
     return shadowSession.next();
   }
 
+  async function overlayShadowReplay() {
+    return shadowSession.replay();
+  }
+
   async function overlayShadowStop() {
     return shadowSession.stop('client');
   }
@@ -846,11 +994,13 @@ export async function apply(ctx, rawConfig) {
       disposeRoutes = registerVoiceRoutes(ctx, {
         log,
         getState: overlayState,
+        subscribe: subscribeState,
         getScenarios: getScenarioList,
         start: overlayStart,
         stop: overlayStop,
         stopSpeech: overlayStopSpeech,
         shadowStart: overlayShadowStart,
+        shadowReplay: overlayShadowReplay,
         shadowNext: overlayShadowNext,
         shadowStop: overlayShadowStop,
       });

@@ -1,6 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createSpeaker, estimateSpeakMs, parseVoiceList } from '../src/tts.js';
+import {
+  createSpeaker,
+  estimateSpeakMs,
+  parseVoiceList,
+  rateToEdgePercent,
+  selectBestSystemVoice,
+} from '../src/tts.js';
 import { deferred, waitUntil } from './support.mjs';
 
 function makeFakeHandle(options = {}) {
@@ -31,6 +37,8 @@ function makeFakeSubprocess(options = {}) {
     handles,
     async resolveExecutable(name) {
       if (options.resolveError) throw new Error('not found: ' + name);
+      if (typeof options.resolve === 'function') return options.resolve(name);
+      if (name === 'edge-tts') throw new Error('not found: edge-tts');
       return '/usr/bin/' + name;
     },
     spawn(spec) {
@@ -171,4 +179,77 @@ test('speak without a subprocess service does not throw', async () => {
   });
   const result = await speaker.speak([{ lang: 'en', text: 'Hello.' }]);
   assert.deepEqual(result, { cancelled: false, spoken: 0 });
+});
+
+test('selectBestSystemVoice upgrades to Enhanced/Premium variants when installed', () => {
+  const voices = parseVoiceList([
+    'Samantha            en_US    # Hello! My name is Samantha.',
+    'Samantha (Enhanced) en_US    # Hello! My name is Samantha.',
+    'Ava (Premium)       en_US    # Hello! My name is Ava.',
+    'Tingting            zh_CN    # 你好！我叫婷婷。',
+    'Tingting (Enhanced) zh_CN    # 你好！我叫婷婷。',
+  ].join('\n'));
+
+  const enChoice = selectBestSystemVoice(voices, 'en', 'Samantha');
+  assert.equal(enChoice.voice, 'Samantha (Enhanced)');
+  assert.equal(enChoice.upgraded, true);
+
+  // If configured voice has only compact tier, a Premium voice in the same language is preferred.
+  const compactSamanthaOnly = parseVoiceList([
+    'Samantha            en_US    # Hello! My name is Samantha.',
+    'Ava (Premium)       en_US    # Hello! My name is Ava.',
+  ].join('\n'));
+  const avaChoice = selectBestSystemVoice(compactSamanthaOnly, 'en', 'Samantha');
+  assert.equal(avaChoice.voice, 'Ava (Premium)');
+  assert.equal(avaChoice.upgraded, true);
+
+  const zhChoice = selectBestSystemVoice(voices, 'zh', 'Tingting');
+  assert.equal(zhChoice.voice, 'Tingting (Enhanced)');
+  assert.equal(zhChoice.upgraded, true);
+});
+
+test('rateToEdgePercent converts WPM to edge-tts rate percentages', () => {
+  assert.equal(rateToEdgePercent(175), '+0%');
+  assert.equal(rateToEdgePercent(210), '+20%');
+  assert.equal(rateToEdgePercent(140), '-20%');
+});
+
+test('edge-tts backend synthesizes via edge-tts + afplay and falls back to say on error', async () => {
+  const unlinked = [];
+  const subprocess = makeFakeSubprocess({
+    resolve: async (name) => '/opt/bin/' + name,
+  });
+  const speaker = createSpeaker({
+    subprocess,
+    config: { ttsEngine: 'edge', edgeEnglishVoice: 'en-US-JennyNeural', rate: 175 },
+    log: makeLog(),
+    voices: parseVoiceList(VOICE_OUTPUT),
+    unlinkFile: async (path) => { unlinked.push(path); },
+  });
+
+  // Segment 1: edge-tts succeeds -> afplay plays -> temp mp3 unlinked.
+  const p1 = speaker.speak([{ lang: 'en', text: 'Neural voice.' }]);
+  await waitUntil(() => subprocess.specs.length === 1);
+  assert.equal(subprocess.specs[0].argv[0], '/opt/bin/edge-tts');
+  assert.ok(subprocess.specs[0].argv.includes('en-US-JennyNeural'));
+  subprocess.handles[0].finish(0);
+
+  await waitUntil(() => subprocess.specs.length === 2);
+  assert.equal(subprocess.specs[1].argv[0], '/opt/bin/afplay');
+  subprocess.handles[1].finish(0);
+  const res1 = await p1;
+  assert.deepEqual(res1, { cancelled: false, spoken: 1 });
+  assert.equal(unlinked.length, 1);
+
+  // Segment 2: edge-tts fails (e.g. offline) -> seamlessly falls back to `say`.
+  const p2 = speaker.speak([{ lang: 'en', text: 'Offline fallback.' }]);
+  await waitUntil(() => subprocess.specs.length === 3);
+  assert.equal(subprocess.specs[2].argv[0], '/opt/bin/edge-tts');
+  subprocess.handles[2].finish(1);
+
+  await waitUntil(() => subprocess.specs.length === 4);
+  assert.equal(subprocess.specs[3].argv[0], '/opt/bin/say');
+  subprocess.handles[3].finish(0);
+  const res2 = await p2;
+  assert.deepEqual(res2, { cancelled: false, spoken: 1 });
 });

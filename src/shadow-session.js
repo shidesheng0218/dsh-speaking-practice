@@ -41,6 +41,15 @@ export function createShadowSession(deps) {
   const createMic = deps.createMic;
   const stt = typeof deps.stt === 'function' ? deps.stt() : deps.stt;
   const getDrills = deps.getDrills;
+  const onChange = typeof deps.onChange === 'function' ? deps.onChange : () => {};
+
+  function emitChange(reason = 'shadow') {
+    try {
+      onChange(reason);
+    } catch (_error) {
+      // Listener errors must never disrupt shadowing.
+    }
+  }
 
   let generation = 0;
   let mic = null;
@@ -56,6 +65,8 @@ export function createShadowSession(deps) {
     index: 0,
     total: 0,
     target: '',
+    focus: '',
+    tipZh: '',
     said: '',
     score: null,
     tokens: [],
@@ -73,6 +84,8 @@ export function createShadowSession(deps) {
       index: state.index,
       total: state.total,
       target: state.target,
+      focus: state.focus,
+      tipZh: state.tipZh,
       said: state.said,
       score: state.score,
       tokens: Array.isArray(state.tokens) ? state.tokens.slice(0, 60) : [],
@@ -118,12 +131,14 @@ export function createShadowSession(deps) {
     state.attempts += 1;
     if (state.attempts >= MAX_ATTEMPTS + 1) {
       state.lastError = '没有听到声音，跳过这一句';
+      emitChange('no-speech-skip');
       await next(gen);
       return;
     }
     await say("I didn't hear you. Listen again: " + state.target);
     if (gen !== generation) return;
     state.phase = 'listening';
+    emitChange('listening');
     armListenTimeout(gen);
   }
 
@@ -147,6 +162,8 @@ export function createShadowSession(deps) {
       index: 0,
       total: picked.length,
       target: '',
+      focus: '',
+      tipZh: '',
       said: '',
       score: null,
       tokens: [],
@@ -156,12 +173,14 @@ export function createShadowSession(deps) {
       lastError: '',
       startedAt: Date.now(),
     });
+    emitChange('preparing');
     try {
       await openMic(gen);
     } catch (error) {
       state.active = false;
       state.phase = 'idle';
       state.lastError = '麦克风启动失败：' + errorText(error);
+      emitChange('mic-error');
       return { ok: false, error: state.lastError };
     }
     if (gen !== generation) return { ok: true };
@@ -211,14 +230,18 @@ export function createShadowSession(deps) {
       return;
     }
     state.target = typeof item.text === 'string' ? item.text : '';
+    state.focus = typeof item.focus === 'string' ? item.focus : '';
+    state.tipZh = typeof item.tipZh === 'string' ? item.tipZh : '';
     state.said = '';
     state.score = null;
     state.tokens = [];
     state.attempts = 0;
     state.phase = 'speaking';
+    emitChange('speaking');
     await say('Listen: ' + state.target);
     if (gen !== generation) return;
     state.phase = 'listening';
+    emitChange('listening');
     armListenTimeout(gen);
   }
 
@@ -226,6 +249,7 @@ export function createShadowSession(deps) {
     if (gen !== generation || state.phase !== 'listening') return;
     clearListenTimer();
     state.phase = 'transcribing';
+    emitChange('transcribing');
     let text = '';
     try {
       const wav = buildWav(event.pcm);
@@ -236,6 +260,7 @@ export function createShadowSession(deps) {
     } catch (error) {
       state.lastError = '识别失败：' + errorText(error);
       state.phase = 'listening';
+      emitChange('stt-error');
       armListenTimeout(gen);
       return;
     }
@@ -246,19 +271,49 @@ export function createShadowSession(deps) {
     state.tokens = diff.tokens;
     state.attempts += 1;
     state.phase = 'feedback';
+    emitChange('feedback');
     const feedback = feedbackLine(diff);
     await say(feedback);
     if (gen !== generation) return;
     const passed = diff.score >= PASS_SCORE;
     if (passed || state.attempts >= MAX_ATTEMPTS) {
       state.results.push({ index: state.index, score: diff.score, target: state.target, said: text });
+      emitChange('result');
       await next(gen);
       return;
     }
     await say('One more time: ' + state.target);
     if (gen !== generation) return;
     state.phase = 'listening';
+    emitChange('retry');
     armListenTimeout(gen);
+  }
+
+  async function replay() {
+    if (!state.active || state.target === '') {
+      return { ok: false, error: '当前没有正在进行的跟读句子' };
+    }
+    if (state.phase === 'transcribing') {
+      return { ok: false, error: '正在识别中，请稍候' };
+    }
+    const gen = generation;
+    clearListenTimer();
+    if (speaker !== null && speaker !== undefined && typeof speaker.cancel === 'function') {
+      try {
+        await speaker.cancel();
+      } catch (_error) {
+        // Ignore.
+      }
+    }
+    if (gen !== generation || !state.active) return { ok: false };
+    state.phase = 'speaking';
+    emitChange('replay');
+    await say('Listen: ' + state.target);
+    if (gen !== generation || !state.active) return { ok: false };
+    state.phase = 'listening';
+    emitChange('listening');
+    armListenTimeout(gen);
+    return { ok: true };
   }
 
   async function next(gen) {
@@ -278,6 +333,7 @@ export function createShadowSession(deps) {
     const scores = state.results.map((item) => item.score).filter((value) => Number.isFinite(value));
     state.averageScore = scores.length === 0 ? null : Math.round(scores.reduce((a, b) => a + b, 0) / scores.length);
     state.phase = 'done';
+    emitChange('done');
     const summary = state.averageScore === null
       ? 'Practice finished.'
       : 'Practice finished. Your average score is ' + state.averageScore + ' out of 100.';
@@ -285,6 +341,7 @@ export function createShadowSession(deps) {
     if (gen !== generation) return;
     state.active = false;
     state.phase = 'idle';
+    emitChange('idle');
     log.info('shadow session finished: average=' + String(state.averageScore));
   }
 
@@ -306,6 +363,7 @@ export function createShadowSession(deps) {
     const wasActive = state.active;
     state.active = false;
     state.phase = 'idle';
+    emitChange('stopped');
     await closeMic();
     if (speaker !== null && speaker !== undefined && typeof speaker.cancel === 'function') {
       try {
@@ -321,6 +379,7 @@ export function createShadowSession(deps) {
   return {
     start,
     stop,
+    replay,
     next: () => next(generation),
     getState: snapshot,
     get active() {

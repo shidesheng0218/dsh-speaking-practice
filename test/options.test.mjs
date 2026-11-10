@@ -10,7 +10,9 @@ import {
 test('normalizeOptions applies documented defaults', () => {
   const options = normalizeOptions({});
   assert.equal(options.practiceRoot, '');
+  assert.equal(options.ttsEngine, 'auto');
   assert.equal(options.englishVoice, DEFAULT_OPTIONS.englishVoice);
+  assert.equal(options.edgeEnglishVoice, 'en-US-JennyNeural');
   assert.equal(options.rate, 175);
   assert.equal(options.silenceMs, 600);
   assert.equal(options.minSpeechMs, 200);
@@ -23,6 +25,7 @@ test('normalizeOptions applies documented defaults', () => {
 test('normalizeOptions clamps and validates config values', () => {
   const options = normalizeOptions({
     practiceRoot: '/work/root/',
+    ttsEngine: 'INVALID',
     rate: 1000,
     silenceMs: 10,
     minSpeechMs: 5000,
@@ -32,6 +35,7 @@ test('normalizeOptions clamps and validates config values', () => {
     logFile: 'logs/x.log',
   });
   assert.equal(options.practiceRoot, '/work/root');
+  assert.equal(options.ttsEngine, 'auto');
   assert.equal(options.rate, 320);
   assert.equal(options.silenceMs, 250);
   assert.equal(options.minSpeechMs, 2000);

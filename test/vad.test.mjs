@@ -106,3 +106,30 @@ test('push tolerates odd byte chunks and empty input', () => {
   assert.deepEqual(vad.push(Buffer.alloc(0)), []);
   assert.doesNotThrow(() => feed(vad, silencePcm(200), 641));
 });
+
+test('setPlaybackActive raises effective threshold and onset frames during TTS playback', () => {
+  const vad = new EnergyVad({
+    silenceMs: 400,
+    bargeInBoostDb: 12,
+    bargeInOnsetFrames: 6,
+  });
+  feed(vad, silencePcm(500));
+  assert.equal(vad.calibrated, true);
+  assert.equal(vad.thresholdDb, -45);
+  assert.equal(vad.effectiveThresholdDb, -45);
+
+  vad.setPlaybackActive(true);
+  assert.equal(vad.playbackActive, true);
+  assert.equal(vad.effectiveThresholdDb, -33);
+
+  // A quiet bleed signal (~ -40 dBFS) that would trigger normal -45 dBFS is ignored during playback.
+  const bleedEvents = feed(vad, concatPcm(tonePcm(300, 0.01), silencePcm(500)));
+  assert.equal(bleedEvents.filter((event) => event.type === 'speech-start').length, 0);
+
+  // A loud user interruption (~ -20 dBFS) sustained >= 6 frames (120 ms) still triggers speech-start.
+  const loudEvents = feed(vad, concatPcm(tonePcm(400, 0.1), silencePcm(600)));
+  assert.ok(loudEvents.some((event) => event.type === 'speech-start'));
+
+  vad.setPlaybackActive(false);
+  assert.equal(vad.effectiveThresholdDb, -45);
+});

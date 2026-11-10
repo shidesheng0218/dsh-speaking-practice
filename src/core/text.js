@@ -276,3 +276,47 @@ export function summarizeText(text, maxChars = 120) {
   if (compact.length <= maxChars) return compact;
   return compact.slice(0, Math.max(0, maxChars - 1)) + '…';
 }
+
+function echoWords(text) {
+  const normalized = normalizeSpokenText(text).replace(/'/gu, '');
+  if (normalized === '') return [];
+  return normalized.split(' ').filter((word) => word !== '');
+}
+
+/**
+ * Detect whether a microphone transcript is likely acoustic echo of the
+ * assistant's recently spoken TTS output.
+ *
+ * Only triggers when the transcript contains at least `minWords` words (short
+ * conversational interjections like "yes", "right", "okay" are never treated
+ * as echo) and a high fraction of those words appear in the spoken output.
+ *
+ * @param {string} transcript user STT transcript.
+ * @param {string|string[]} spokenCandidates assistant text(s) spoken recently.
+ * @param {{minWords?: number, minOverlap?: number}} [options]
+ * @returns {boolean}
+ */
+export function isLikelyEchoTranscript(transcript, spokenCandidates, options = {}) {
+  const minWords = Math.max(2, options.minWords ?? 3);
+  const minOverlap = Math.min(1, Math.max(0.5, options.minOverlap ?? 0.8));
+  const words = echoWords(transcript);
+  if (words.length < minWords) return false;
+
+  const list = Array.isArray(spokenCandidates) ? spokenCandidates : [spokenCandidates];
+  const combinedText = list
+    .filter((item) => typeof item === 'string' && item.trim() !== '')
+    .join(' ');
+  if (combinedText === '') return false;
+
+  const normalizedTranscript = words.join(' ');
+  const normalizedSpoken = echoWords(combinedText).join(' ');
+  if (normalizedSpoken === '') return false;
+  if (normalizedSpoken.includes(normalizedTranscript)) return true;
+
+  const spokenSet = new Set(normalizedSpoken.split(' '));
+  let matched = 0;
+  for (const word of words) {
+    if (spokenSet.has(word)) matched += 1;
+  }
+  return matched / words.length >= minOverlap;
+}

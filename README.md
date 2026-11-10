@@ -2,34 +2,26 @@
 
 在 DeepSeek Harness 桌面版里练英语口语的本地插件。
 
-当前 v0.4：免按键语音循环 + 教练模式 + 客户端浮层（状态/波形/字幕/Stop）+ 跟读练习 + 4 个场景 + 结束兜底复盘。
+当前 v0.6：零摩擦空会话一键开练 + 双重回声抑制 + 多后端 TTS（自动优选 Premium/Enhanced 及可选 `edge-tts` 神经语音）+ SSE 实时状态流 + 教练场景模式 + 进阶跟读练习（缩略词等价、近音词提示、重读本句）+ 自动兜底复盘。
 
 仓库：<https://github.com/shidesheng0218/dsh-speaking-practice>
-打开后**不用打字、不用按键**：你对着电脑说话 → 本机 SenseVoice 转成文字 → 自动作为消息发给 Harness → 它回复时用 macOS 语音读给你听 → 你说完它继续听。朗读过程中你随时开口，它会停下来听你说。
+打开后**不用打字、不用按键**：你对着电脑说话 → 本机 SenseVoice 转成文字 → 自动作为消息发给 Harness → 它回复时流式读给你听 → 你说完它继续听。朗读过程中你随时开口即可打断（内置扬声器回声抑制防误触）。
 
 - 语音识别：DSH 自带的本地 SenseVoice（模型已在本机，离线可用）
-- 语音合成：macOS `say`（默认 Samantha 美音；可在配置里换音色/语速）
+- 语音合成：支持 `auto | say | edge`（本机安装 `edge-tts` 时自动使用神经音色；离线或未安装时回退至 macOS `say` 并自动优选 Enhanced/Premium 高品质音色）
 - 对话模型：当前会话所用的模型
-- v0.1 只有 host 半 + `/voice` 命令；带麦克风按钮/波形/字幕的客户端 UI 在下一阶段
+- 状态同步：`/voice-practice/events` 服务端 SSE 实时推送 + 轮询平滑降级
 
 ## 安装
 
 插件已在 DSH 桌面版 profile 的 patch 层注册（见 `scripts/install-local.mjs`）。安装后无需重启，HMR 会自动加载。也可以从 Web GUI 侧栏「插件」页把本目录当作本地包安装（用于分发时的备用路径，见 `docs/install-notes.md`）。
 
-## 客户端 UI（spike）
+## 客户端 UI（v0.6）
 
-输入框右侧（模型选择器左边）会出现 **🎙 语音** 按钮（客户端插件 `lib/client.js`，slot `conversation.input.right`）：
-
-- 点一下 = 相当于是往输入框写入并提交 `/voice on`；再点一下 = `/voice off`。
-- 按钮状态是本地乐观状态，暂时不带实时 Speaking/Listening 指示（等 v0.3 完整版接通道）。
-- 客户端 bundle 首次注册/更新后如果没有出现按钮：先刷新页面（Cmd+R）；仍没有则重启一次 DeepSeek Harness（客户端模块图在启动时组合最稳）。
-
-## 客户端 UI（v0.5）
-
-- **入口**：输入框工具栏里的声波小图标（无文字），点击打开语音练习
-- **练习态**：居中沉浸面板 —— 呼吸感声波球、实时状态、双方字幕、计时；底部「停止朗读 / 结束对话」
+- **入口**：输入框工具栏右侧声波图标，**支持空白新会话一键开启**（无需先发文字激活会话，开启即自动朗读所选场景开场白）
+- **练习态**：居中沉浸面板 —— 呼吸感声波球、SSE 低延迟实时状态与双方字幕、计时；底部「停止朗读 / 结束对话」
 - **场景选择**：同一面板内的场景列表（日常闲聊 / 英文面试 / 雅思 Part 2 / 职场英语）
-- **跟读练习**：面板内切换，逐词高亮 + 分数
+- **跟读练习**：支持缩略词等价判定（如 `I'm` = `I am`）、近音词/最小对立对软评分与发音提示、发音要点展示，以及「重读本句 / 跳过这句 / 结束跟读」
 - 支持 Esc 关闭；「减少动态效果」下自动关闭动画
 
 ## 使用
@@ -110,9 +102,12 @@
 
 | 字段 | 默认 | 说明 |
 |---|---|---|
-| `practiceRoot` | 本目录 | 只对该工作区下的会话生效 |
-| `englishVoice` | `Samantha` | 英文音色（也可用 Daniel 英音） |
-| `chineseVoice` | `Tingting` | 中文音色（本机没有则跳过中文朗读） |
+| `practiceRoot` | 本目录 | 只对该工作区下的会话生效（设为空字符串表示不限制目录） |
+| `ttsEngine` | `auto` | 语音引擎：`auto`（优先 `edge-tts` 回退 `say`）、`say`、`edge` |
+| `englishVoice` | `Samantha` | macOS `say` 英文音色（自动检测并优先升级同音色 Enhanced/Premium 版本） |
+| `chineseVoice` | `Tingting` | macOS `say` 中文音色（本机没有则跳过中文朗读） |
+| `edgeEnglishVoice` | `en-US-JennyNeural` | `edge-tts` 英文神经音色 |
+| `edgeChineseVoice` | `zh-CN-XiaoxiaoNeural` | `edge-tts` 中文神经音色 |
 | `rate` | `175` | 朗读语速（词/分钟） |
 | `language` | `auto` | 识别语言提示（en/auto/zh…） |
 | `silenceMs` | `600` | 说完判定（毫秒） |
@@ -148,7 +143,7 @@ stt-transcribe=ok text="Hello, this is a speech recognition self test." | say=ok
 - 说了没反应：看日志里的 VAD 阈值与转写结果；环境嘈杂时调大 `silenceMs`，或把系统输入换成外接麦克风。
 - 第一次转写超时：看日志是否在准备模型（`~/.dsh/speech-to-text` 已缓存 230MB 模型）。
 
-## 架构（v0.1）
+## 架构（v0.6）
 
 ```
 plugin.js（稳定 dev shell，被 profile patch 以绝对路径加载）
@@ -156,24 +151,30 @@ plugin.js（稳定 dev shell，被 profile patch 以绝对路径加载）
   ├─ /voice-reload 命令 + 监视 src/ 自动重载
   └─ logs/voice-loader.log
 
-src/index.js（Cordis 插件）
-  ├─ Config（schemastery）
-  ├─ /voice on|off|status 命令
-  ├─ session/event 监听（assistant/message + turn/end → 朗读）
-  └─ VoiceLoop
-       ├─ src/mic.js   ffmpeg 常驻 PCM 采集
-       ├─ src/core/vad.js  能量 VAD（pre-roll/断句）
-       ├─ ctx.speechToText  本地 SenseVoice 转写
-       ├─ ctx.agents.get(id).agent.followup()  提交用户消息
-       └─ src/tts.js   say 分段朗读 / 打断
-```
+lib/client.js（System.register 零构建客户端插件）
+  ├─ conversation.input.right 声波入口 + shell.overlay 沉浸练习浮层
+  └─ EventSource(/voice-practice/events) 实时订阅 + 轮询平滑降级
 
-下一阶段：会话内麦克风按钮 + 实时字幕 + Listening/Thinking/Speaking 状态浮层（客户端插件），以及英语教练人设 / 场景课程 / 会话复盘。
+src/index.js（Cordis 插件）
+  ├─ Config（schemastery）+ 空会话自动创建/唤醒（sessionController）
+  ├─ /voice on|off|status|scenarios|shadow|selftest 命令
+  ├─ src/server.js  同源校验 HTTP 路由 + SSE 实时状态广播
+  ├─ src/coach.js   教练协议 + 场景卡动态注入 + 兜底轻量复盘
+  ├─ src/shadow-session.js + src/core/shadow.js  进阶跟读练习与软评分
+  └─ VoiceLoop (src/core/loop.js)
+       ├─ src/mic.js   ffmpeg 常驻 PCM 采集
+       ├─ src/core/vad.js  能量 VAD（Speaking 态动态抬高 Barge-in 门限 + 冻结底噪）
+       ├─ src/core/text.js 文本分段 + 扬声器回声文本重合度过滤
+       ├─ ctx.speechToText  本地 SenseVoice 转写
+       ├─ agent.followup()  提交用户消息
+       └─ src/tts.js   edge-tts / macOS say（自动优选 Enhanced/Premium）流式朗读
+```
 
 ## 开发
 
 ```bash
-node --test          # 纯逻辑单测（VAD / WAV / 文本 / 状态机）
+npm test                # 运行全部纯逻辑与服务单元测试
+npm run install-local   # 将插件注册到本机 DeepSeek Harness profile
 ```
 
 改 `src/` 后无需重启：dev shell 会监视文件并自动重载，或手动 `/voice-reload`。

@@ -24,6 +24,8 @@ export const VAD_DEFAULTS = Object.freeze({
   onsetFrames: 3,
   calibrateMs: 400,
   prerollMs: 300,
+  bargeInBoostDb: 8,
+  bargeInOnsetFrames: 6,
 });
 
 const EMPTY = Buffer.alloc(0);
@@ -78,7 +80,12 @@ export class EnergyVad {
     this.prerollFrames = Math.max(0, Math.round(merged.prerollMs / this.frameMs));
     this.silenceFrames = Math.max(1, Math.round(this.silenceMs / this.frameMs));
     this.maxUtteranceFrames = Math.max(1, Math.round(this.maxUtteranceMs / this.frameMs));
-    this.ringLimit = Math.max(this.onsetFrames, this.prerollFrames, 1);
+    this.bargeInBoostDb = Number.isFinite(merged.bargeInBoostDb) ? Math.max(0, merged.bargeInBoostDb) : 8;
+    this.bargeInOnsetFrames = Math.max(
+      this.onsetFrames,
+      Math.round(Number.isFinite(merged.bargeInOnsetFrames) ? merged.bargeInOnsetFrames : 6),
+    );
+    this.ringLimit = Math.max(this.onsetFrames, this.bargeInOnsetFrames, this.prerollFrames, 1);
 
     this._resetRuntime(true);
   }
@@ -97,6 +104,7 @@ export class EnergyVad {
     this._utteranceFirstFrame = 0;
     this._suppressedUntilMs = 0;
     this._suspended = false;
+    this._playbackActive = false;
     this._speechMs = 0;
     this._counters = { frames: 0, utterances: 0, discarded: 0 };
     if (resetCalibration) {
@@ -123,6 +131,15 @@ export class EnergyVad {
     return this._thresholdDb;
   }
 
+  get effectiveThresholdDb() {
+    if (!this._playbackActive) return this._thresholdDb;
+    return Math.min(-10, this._thresholdDb + this.bargeInBoostDb);
+  }
+
+  get playbackActive() {
+    return this._playbackActive;
+  }
+
   get timeMs() {
     return this._timeMs;
   }
@@ -133,6 +150,8 @@ export class EnergyVad {
       calibrated: this._calibrated,
       noiseFloorDb: this._noiseFloorDb,
       thresholdDb: this._thresholdDb,
+      effectiveThresholdDb: this.effectiveThresholdDb,
+      playbackActive: this._playbackActive,
       timeMs: this._timeMs,
       frames: this._counters.frames,
       utterances: this._counters.utterances,
@@ -152,6 +171,19 @@ export class EnergyVad {
     this._suspended = Boolean(value);
   }
 
+  /**
+   * Raise onset threshold and required consecutive voiced frames while TTS
+   * playback is active, reducing speaker-bleed self-interruption on open mics.
+   */
+  setPlaybackActive(value) {
+    const next = Boolean(value);
+    if (this._playbackActive === next) return;
+    this._playbackActive = next;
+    if (next && this._state === 'silence') {
+      this._speechRun = 0;
+    }
+  }
+
   /** Drop any in-progress utterance and optionally recalibrate. */
   reset(options = {}) {
     this._resetRuntime(options.recalibrate !== false);
@@ -166,6 +198,7 @@ export class EnergyVad {
   }
 
   _adaptNoise(db, voiced) {
+    if (this._playbackActive) return;
     if (db < this._noiseFloorDb) {
       this._noiseFloorDb = 0.7 * this._noiseFloorDb + 0.3 * db;
     } else if (!voiced) {
@@ -233,13 +266,14 @@ export class EnergyVad {
     }
 
     const suppressed = this._suspended || this._timeMs <= this._suppressedUntilMs;
-    const threshold = this._thresholdDb;
+    const threshold = this.effectiveThresholdDb;
+    const requiredOnset = this._playbackActive ? this.bargeInOnsetFrames : this.onsetFrames;
     const voiced = !suppressed && db >= threshold;
     this._adaptNoise(db, voiced);
 
     if (this._state === 'silence') {
       this._speechRun = voiced ? this._speechRun + 1 : 0;
-      if (this._speechRun < this.onsetFrames) return [];
+      if (this._speechRun < requiredOnset) return [];
       this._state = 'speech';
       this._silenceRun = 0;
       this._speechStartFrame = frameIndex - (this._speechRun - 1);

@@ -5,6 +5,7 @@ import {
   classifyLanguage,
   cleanForSpeech,
   extractMessageText,
+  isLikelyEchoTranscript,
   matchVoiceCommand,
   prepareSpeechText,
   segmentByLanguage,
@@ -105,4 +106,13 @@ test('extractMessageText joins only text blocks', () => {
 test('summarizeText collapses whitespace and truncates', () => {
   assert.equal(summarizeText('a  b\n c'), 'a b c');
   assert.equal(summarizeText('abcdef', 4), 'abc…');
+});
+
+test('isLikelyEchoTranscript detects TTS bleed while preserving genuine user turns', () => {
+  const assistant = "Hey, good to hear from you! So, how's your week been so far?";
+  assert.equal(isLikelyEchoTranscript('good to hear from you', assistant), true);
+  assert.equal(isLikelyEchoTranscript("how's your week been", assistant), true);
+  assert.equal(isLikelyEchoTranscript('Yes it was great', assistant), false);
+  assert.equal(isLikelyEchoTranscript('okay', assistant), false, 'short interjections are never treated as echo');
+  assert.equal(isLikelyEchoTranscript('My week has been pretty busy with work', assistant), false);
 });

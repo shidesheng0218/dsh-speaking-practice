@@ -108,7 +108,10 @@ function readRegistration() {
   if (!patchInfo.exists) return { patchExists: false, blocks: 0, entryMatches: false };
   if (patchInfo.content === null) return { patchExists: true, blocks: 0, entryMatches: false, error: 'profile patch 不是普通文件' };
   const blocks = shared.findManagedBlocks(patchInfo.content);
-  const entryMatches = blocks.length > 0 && patchInfo.content.includes('name: ' + shared.yamlString(entryPath));
+  const entryMatches = blocks.length > 0 && (
+    patchInfo.content.includes('name: ' + shared.yamlString(entryPath))
+    || patchInfo.content.includes('name: ' + shared.yamlString(shared.PLUGIN_NAME))
+  );
   return { patchExists: true, blocks: blocks.length, entryMatches: entryMatches };
 }
 

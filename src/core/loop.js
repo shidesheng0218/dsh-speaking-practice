@@ -14,6 +14,7 @@ import { EnergyVad, rmsDbFromPcm16 } from './vad.js';
 import { buildWav } from './wav.js';
 import {
   extractMessageText,
+  isLikelyEchoTranscript,
   matchVoiceCommand,
   prepareSpeechText,
   summarizeText,
@@ -71,6 +72,7 @@ export class VoiceLoop {
     this.submit = deps.submit;
     this.requestVoiceOff = pick(deps.requestVoiceOff, async () => {});
     this.onFatal = pick(deps.onFatal, () => {});
+    this.onChange = pick(deps.onChange, () => {});
     this.createVad = pick(deps.createVad, (options) => new EnergyVad(options));
 
     const cfg = this.config;
@@ -86,7 +88,10 @@ export class VoiceLoop {
       onsetFrames: pick(cfg.onsetFrames, 3),
       calibrateMs: pick(cfg.calibrateMs, 400),
       prerollMs: pick(cfg.prerollMs, 300),
+      bargeInBoostDb: pick(cfg.bargeInBoostDb, 8),
+      bargeInOnsetFrames: pick(cfg.bargeInOnsetFrames, 6),
     };
+    this.echoGuardWindowMs = pick(cfg.echoGuardWindowMs, 4000);
     this.transcribeTimeoutMs = pick(cfg.transcribeTimeoutMs, 15000);
     this.replyTimeoutMs = pick(cfg.replyTimeoutMs, 120000);
     this.ttsOnsetGuardMs = pick(cfg.ttsOnsetGuardMs, 150);
@@ -119,7 +124,10 @@ export class VoiceLoop {
     this._assistantCommitted = '';
     this._assistantStream = '';
     this._suppressSpeakUntilTurnEnd = false;
+    this._lastSpokenEndAt = 0;
+    this._captureFromBargeIn = false;
     this._lastLevelDb = MIN_LEVEL_DB;
+    this._lastLevelEmitAt = 0;
     this._levelLeftover = EMPTY_BUFFER;
     this._levelFrameBytes = Math.max(
       2,
@@ -159,10 +167,25 @@ export class VoiceLoop {
   }
 
   _logTransition(entry) {
+    if (this._vad !== null && typeof this._vad.setPlaybackActive === 'function') {
+      this._vad.setPlaybackActive(entry.to === 'speaking');
+    }
+    if (entry.from === 'speaking' && entry.to !== 'speaking') {
+      this._lastSpokenEndAt = Date.now();
+    }
     const meta = entry.meta !== null && typeof entry.meta === 'object' ? entry.meta : {};
     const reason = typeof meta.reason === 'string' ? meta.reason : typeof meta.kind === 'string' ? meta.kind : '';
     const suffix = reason === '' ? '' : ' (' + reason + ')';
     this.log.info('[voice] state ' + entry.from + ' -> ' + entry.to + suffix);
+    this._notifyChange('state');
+  }
+
+  _notifyChange(reason = 'update') {
+    try {
+      this.onChange(reason);
+    } catch (_error) {
+      // Listener errors must never disrupt the voice loop.
+    }
   }
 
   _isCurrent(generation) {
@@ -419,11 +442,13 @@ export class VoiceLoop {
   _onSpeechStart(event) {
     this._touch();
     if (this.sm.state === 'listening') {
+      this._captureFromBargeIn = false;
       this.sm.transition('capturing', { reason: 'speech-start' });
       this.log.info('[voice] speech onset t=' + (event.timeMs / 1000).toFixed(2) + 's');
       return;
     }
     if (this.sm.state === 'speaking' && this.config.bargeIn !== false) {
+      this._captureFromBargeIn = true;
       this.log.info('[voice] barge-in: cancelling speech');
       this._cancelSpeech('barge-in');
       this.sm.transition('capturing', { reason: 'barge-in' });
@@ -459,6 +484,7 @@ export class VoiceLoop {
         : '';
       this._lastTranscript = text;
       this._consecutiveFailures = 0;
+      this._notifyChange('transcript');
       if (text === '') {
         this.log.info('[voice] empty transcript, listening again');
         this._listening('empty-transcript');
@@ -473,6 +499,11 @@ export class VoiceLoop {
       }
       if (command !== null && command.kind === 'repeat') {
         await this._repeat();
+        return;
+      }
+      if (this._isEchoCandidate(text)) {
+        this.log.info('[voice] ignoring probable speaker-echo transcript: ' + summarizeText(text, 120));
+        this._listening('echo-filtered');
         return;
       }
       await this._submitText(text, generation);
@@ -802,6 +833,7 @@ export class VoiceLoop {
       ? text
       : this._assistantCommitted + '\n' + text;
     this._assistantStream = '';
+    this._notifyChange('assistant-message');
   }
 
   /** Append one live stream delta to the caption (converged by messages later). */
@@ -810,6 +842,7 @@ export class VoiceLoop {
     const value = Number.isFinite(turn) ? turn : this._assistantTurn;
     if (value !== this._assistantTurn) this._resetAssistantText(value);
     this._assistantStream += delta;
+    this._notifyChange('assistant-stream');
   }
 
   /**
@@ -829,6 +862,11 @@ export class VoiceLoop {
     }
     this._lastLevelDb = rmsDbFromPcm16(combined.subarray(usable - frameBytes, usable));
     this._levelLeftover = usable === combined.length ? EMPTY_BUFFER : Buffer.from(combined.subarray(usable));
+    const now = Date.now();
+    if (now - this._lastLevelEmitAt >= 100) {
+      this._lastLevelEmitAt = now;
+      this._notifyChange('level');
+    }
   }
 
   _resetLevel() {
@@ -840,6 +878,23 @@ export class VoiceLoop {
     if (this.sm.state === 'speaking') return true;
     if (this._streamSpeaker !== null && this._streamSpeaker.speaking === true) return true;
     return this.tts !== null && this.tts.speaking === true;
+  }
+
+  _isEchoCandidate(transcript) {
+    if (this.echoGuardWindowMs <= 0) return false;
+    const fromBargeIn = this._captureFromBargeIn;
+    this._captureFromBargeIn = false;
+    const recentlySpoken = this._lastSpokenEndAt > 0
+      && (Date.now() - this._lastSpokenEndAt) <= this.echoGuardWindowMs;
+    if (!fromBargeIn && !recentlySpoken) return false;
+    const candidates = [];
+    const currentCaption = this._assistantTextValue();
+    if (currentCaption !== '') candidates.push(currentCaption);
+    if (this._lastReplySegments.length > 0) {
+      candidates.push(this._lastReplySegments.map((seg) => seg.text).join(' '));
+    }
+    if (candidates.length === 0) return false;
+    return isLikelyEchoTranscript(transcript, candidates);
   }
 
   _touch() {

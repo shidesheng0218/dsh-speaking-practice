@@ -8,8 +8,11 @@ import { isAbsolute, resolve } from 'node:path';
 
 export const DEFAULT_OPTIONS = Object.freeze({
   practiceRoot: '',
+  ttsEngine: 'auto',
   englishVoice: 'Samantha',
   chineseVoice: 'Tingting',
+  edgeEnglishVoice: 'en-US-JennyNeural',
+  edgeChineseVoice: 'zh-CN-XiaoxiaoNeural',
   rate: 175,
   language: 'auto',
   silenceMs: 600,
@@ -33,6 +36,9 @@ export const INTERNAL_DEFAULTS = Object.freeze({
   calibrateMs: 400,
   prerollMs: 300,
   onsetFrames: 3,
+  bargeInBoostDb: 8,
+  bargeInOnsetFrames: 6,
+  echoGuardWindowMs: 4000,
   ttsOnsetGuardMs: 150,
   ttsTailGuardMs: 120,
   transcribeTimeoutMs: 15000,
@@ -55,6 +61,9 @@ const INTEGER_RANGES = Object.freeze({
   calibrateMs: [0, 2000],
   prerollMs: [0, 1000],
   onsetFrames: [1, 20],
+  bargeInBoostDb: [0, 24],
+  bargeInOnsetFrames: [1, 30],
+  echoGuardWindowMs: [0, 15000],
   ttsOnsetGuardMs: [0, 1000],
   ttsTailGuardMs: [0, 1000],
   transcribeTimeoutMs: [1000, 120000],
@@ -69,6 +78,14 @@ const INTEGER_RANGES = Object.freeze({
 
 function pickString(value, fallback) {
   return typeof value === 'string' && value.trim().length > 0 ? value.trim() : fallback;
+}
+
+const VALID_TTS_ENGINES = new Set(['auto', 'say', 'edge']);
+
+function pickTtsEngine(value, fallback) {
+  if (typeof value !== 'string') return fallback;
+  const normalized = value.trim().toLowerCase();
+  return VALID_TTS_ENGINES.has(normalized) ? normalized : fallback;
 }
 
 function pickInteger(value, fallback, min, max) {
@@ -103,8 +120,11 @@ export function normalizeOptions(input, overrides) {
 
   const options = {
     practiceRoot,
+    ttsEngine: pickTtsEngine(source.ttsEngine, DEFAULT_OPTIONS.ttsEngine),
     englishVoice: pickString(source.englishVoice, DEFAULT_OPTIONS.englishVoice),
     chineseVoice: pickString(source.chineseVoice, DEFAULT_OPTIONS.chineseVoice),
+    edgeEnglishVoice: pickString(source.edgeEnglishVoice, DEFAULT_OPTIONS.edgeEnglishVoice),
+    edgeChineseVoice: pickString(source.edgeChineseVoice, DEFAULT_OPTIONS.edgeChineseVoice),
     rate: pickInteger(source.rate, DEFAULT_OPTIONS.rate, 80, 320),
     language: pickString(source.language, DEFAULT_OPTIONS.language),
     silenceMs: pickInteger(source.silenceMs, DEFAULT_OPTIONS.silenceMs, 250, 2000),

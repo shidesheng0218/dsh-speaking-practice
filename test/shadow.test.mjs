@@ -94,19 +94,42 @@ test('diffWords is case, punctuation and apostrophe tolerant', () => {
     'both of my brothers are thirty three this month').score, 100);
 });
 
-test('diffWords does not expand contractions', () => {
+test('diffWords treats contractions and expanded forms as equivalent', () => {
   const result = diffWords("I'm happy today", 'I am happy today');
   assert.deepEqual(result.targetWords, ["i'm", 'happy', 'today']);
   assert.equal(result.total, 3);
-  assert.equal(result.matched, 2);
-  assert.equal(result.score, 67);
+  assert.equal(result.matched, 3);
+  assert.equal(result.score, 100);
   assert.deepEqual(result.tokens, [
-    { word: "i'm", status: 'missing' },
-    { word: 'i', status: 'extra' },
-    { word: 'am', status: 'extra' },
+    { word: "i'm", status: 'match' },
     { word: 'happy', status: 'match' },
     { word: 'today', status: 'match' },
   ]);
+
+  const reverse = diffWords('I have tried cannot stop', "I've tried can't stop");
+  assert.equal(reverse.score, 100);
+  assert.equal(reverse.matched, 5);
+});
+
+test('diffWords gives partial credit and close status for near-homophones / minimal pairs', () => {
+  const result = diffWords('I think this ship is ready', 'I sink this sheep is ready');
+  assert.equal(result.total, 6);
+  assert.equal(result.matched, 4);
+  assert.equal(result.close, 2);
+  // (4 + 2 * 0.5) / 6 = 5 / 6 => 83
+  assert.equal(result.score, 83);
+  const closeTokens = result.tokens.filter((token) => token.status === 'close');
+  assert.deepEqual(closeTokens, [
+    { word: 'think', status: 'close', heard: 'sink' },
+    { word: 'ship', status: 'close', heard: 'sheep' },
+  ]);
+  assert.match(feedbackLine(result), /Watch 'think' \(heard 'sink'\)\./);
+});
+
+test('diffWords accepts exact homophones from STT', () => {
+  const result = diffWords('See you next week at four', 'sea you next weak at for');
+  assert.equal(result.score, 100);
+  assert.equal(result.matched, 6);
 });
 
 test('diffWords ignores hesitation fillers on both sides', () => {
