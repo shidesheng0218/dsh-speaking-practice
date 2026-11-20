@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>voice-practice UI preview</title>
+<style>
+  html, body, #app { height: 100%; margin: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif; }
+  #app { position: relative; display: flex; background: #F6F7F9; color: #1f2329; overflow: hidden; }
+  .side { width: 228px; border-right: 1px solid #ECEEF2; padding: 18px 16px; display: flex; flex-direction: column; gap: 14px; }
+  .logo { width: 26px; height: 26px; border-radius: 8px; background: #E7EAF0; margin-bottom: 6px; }
+  .side .row { height: 10px; border-radius: 5px; background: #E9EBF0; }
+  .side .row.w60 { width: 60%; } .side .row.w80 { width: 80%; } .side .row.w45 { width: 45%; }
+  .main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+  .chat { flex: 1; padding: 48px 56px; display: flex; flex-direction: column; gap: 18px; }
+  .bubble { height: 12px; border-radius: 6px; background: #ECEEF2; }
+  .bubble.w70 { width: 70%; } .bubble.w45 { width: 45%; } .bubble.w85 { width: 85%; }
+  .composer-wrap { padding: 16px 28px 22px; }
+  .composer { display: flex; align-items: center; gap: 10px; background: #fff; border: 1px solid #E6E9EF; border-radius: 16px; padding: 8px 10px; box-shadow: 0 2px 10px rgba(16,24,40,.04); }
+  .composer .grow { flex: 1; height: 14px; border-radius: 7px; background: #F0F2F5; }
+  .tool { width: 30px; height: 30px; border-radius: 8px; background: #F3F5F8; }
+  .tool.ghost { background: transparent; }
+  #slots-right { display: inline-flex; align-items: center; gap: 6px; }
+  #overlay-root { position: absolute; inset: 0; pointer-events: none; }
+  #overlay-root > * { pointer-events: auto; }
+</style>
+</head>
+<body>
+<div id="app">
+  <div class="side">
+    <div class="logo"></div>
+    <div class="row w80"></div>
+    <div class="row w60"></div>
+    <div class="row w45"></div>
+    <div class="row w60"></div>
+  </div>
+  <div class="main">
+    <div class="chat">
+      <div class="bubble w70"></div>
+      <div class="bubble w45"></div>
+      <div class="bubble w85"></div>
+      <div class="bubble w60"></div>
+    </div>
+    <div class="composer-wrap">
+      <div class="composer">
+        <span class="tool"></span>
+        <span class="grow"></span>
+        <span class="tool ghost"></span>
+        <span id="slots-right"></span>
+      </div>
+    </div>
+  </div>
+  <div id="overlay-root"></div>
+</div>
+<script src="./vendor/react.production.min.js"></script>
+<script src="./vendor/react-dom.production.min.js"></script>
+<script>
+  const VIEW = new URLSearchParams(location.search).get('view') || 'setup';
+  const SCENARIOS = [
+    { id: 'daily-chat', name: 'Everyday Small Talk', nameZh: '日常闲聊', level: 'B1' },
+    { id: 'job-interview', name: 'Job Interview', nameZh: '英文面试', level: 'B1–B2' },
+    { id: 'ielts-part2', name: 'IELTS Speaking Part 2', nameZh: '雅思口语 Part 2', level: 'B1–B2' },
+    { id: 'workplace', name: 'Workplace English', nameZh: '职场英语', level: 'B1–B2' },
+  ];
+  const STATES = {
+    setup: { ok: true, scenarios: SCENARIOS },
+    practice: {
+      ok: true, active: true, phase: 'listening', scenarioTitle: '日常闲聊', level: 'B1',
+      userText: "I've been pretty busy with work lately, but I still try to speak English every day.",
+      assistantText: "That's great! What kind of work keeps you so busy?",
+      elapsedMs: 42000, speaking: false,
+    },
+    speaking: {
+      ok: true, active: true, phase: 'speaking', scenarioTitle: '英文面试', level: 'B1–B2',
+      userText: 'I have five years of experience in product design.',
+      assistantText: 'Nice. Could you walk me through one project you are proud of?',
+      elapsedMs: 96000, speaking: true,
+    },
+    shadow: {
+      ok: true,
+      shadow: {
+        active: true, target: 'I usually take the bus to work in the morning.', focus: '/ʌ/ /ə/',
+        tipZh: 'bus 的元音要短而松，不要拖成长音', index: 1, total: 5, phase: 'listening',
+        tokens: [
+          { word: 'I', status: 'match' }, { word: 'usually', status: 'close', heard: 'use-ally' },
+          { word: 'take', status: 'match' }, { word: 'the', status: 'match' }, { word: 'bus', status: 'missing' },
+          { word: 'to', status: 'match' }, { word: 'work', status: 'match' }, { word: 'in', status: 'match' },
+          { word: 'the', status: 'match' }, { word: 'morning.', status: 'pending' },
+        ],
+        score: 86, averageScore: 84, said: '',
+      },
+    },
+  };
+  const currentState = STATES[VIEW] || STATES.setup;
+
+  window.fetch = async (url) => {
+    const body = VIEW === 'starting' ? STATES.setup : currentState;
+    if (String(url).includes('/state')) return { ok: true, status: 200, json: async () => body };
+    if (String(url).includes('/start')) return { ok: true, status: 200, json: async () => ({ ok: true, sessionId: 'preview-session' }) };
+    return { ok: true, status: 200, json: async () => ({ ok: true }) };
+  };
+
+  const loaded = [];
+  window.__ModuleLoader__ = { load(def) { loaded.push(def) } };
+  window.__dshSpeakingPracticeOwner = null;
+</script>
+<script src="../../lib/client.js"></script>
+<script>
+  const def = loaded[0];
+  const slots = {};
+  const scoped = {
+    effect() {},
+    uiSession: { current: { getSnapshot: () => ({ key: 'preview-session', cwd: '/Users/eastbuy/Documents/梦想草稿/练习口语' }) } },
+  };
+  const ctx = {
+    effect() {},
+    inject(names, fn) { fn(scoped) },
+    slots: {
+      inject(name, fn) { return fn() },
+      register(registration, renderer) { slots[registration.name] = renderer; return () => {} },
+    },
+  };
+  const mod = def.factory((id) => (id === 'react' ? window.React : null));
+  mod.apply(ctx);
+
+  const React = window.React;
+  const ReactDOM = window.ReactDOM;
+  ReactDOM.createRoot(document.getElementById('slots-right')).render(React.createElement(slots['conversation.input.right']));
+  ReactDOM.createRoot(document.getElementById('overlay-root')).render(React.createElement(slots['shell.overlay']));
+
+  setTimeout(() => {
+    if (VIEW === 'entry') return;
+    const entry = document.querySelector('#slots-right button');
+    if (entry) entry.click();
+  }, 150);
+
+  if (VIEW === 'starting') {
+    setTimeout(() => {
+      const start = Array.from(document.querySelectorAll('button')).find((b) => b.textContent.includes('开始对话练习'));
+      if (start) start.click();
+    }, 600);
+  }
+</script>
+</body>
+</html>

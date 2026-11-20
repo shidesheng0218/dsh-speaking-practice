@@ -6,3 +6,5 @@ lab/_tmp/
 practice/
 practice-logs/
 *.log
+lab/ui-preview/vendor/
+lab/ui-preview/shot-*.png
